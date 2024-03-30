@@ -476,7 +476,72 @@ where
                 .connect_peripheral_to_output(self.spi.cs_signal());
         }
 
+<<<<<<< HEAD:esp-hal/src/spi/master.rs
         self
+=======
+    /// Constructs an SPI instance in 8bit dataframe mode without MISO pin.
+    pub fn new_no_miso<SCK: OutputPin, MOSI: OutputPin, CS: OutputPin>(
+        spi: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = SCK> + 'd,
+        mosi: impl Peripheral<P = MOSI> + 'd,
+        cs: impl Peripheral<P = CS> + 'd,
+        frequency: HertzU32,
+        mode: SpiMode,
+        peripheral_clock_control: &mut PeripheralClockControl,
+        clocks: &Clocks,
+    ) -> Spi<'d, T, FullDuplexMode> {
+        crate::into_ref!(spi, sck, mosi, cs);
+        sck.set_to_push_pull_output()
+            .connect_peripheral_to_output(spi.sclk_signal());
+
+        mosi.set_to_push_pull_output()
+            .connect_peripheral_to_output(spi.mosi_signal());
+
+        cs.set_to_push_pull_output()
+            .connect_peripheral_to_output(spi.cs_signal());
+
+        Self::new_internal(spi, frequency, mode, peripheral_clock_control, clocks)
+    }
+
+    /// Constructs an SPI instance in 8bit dataframe mode without CS and MISO
+    /// pin.
+    pub fn new_no_cs_no_miso<SCK: OutputPin, MOSI: OutputPin>(
+        spi: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = SCK> + 'd,
+        mosi: impl Peripheral<P = MOSI> + 'd,
+        frequency: HertzU32,
+        mode: SpiMode,
+        peripheral_clock_control: &mut PeripheralClockControl,
+        clocks: &Clocks,
+    ) -> Spi<'d, T, FullDuplexMode> {
+        crate::into_ref!(spi, sck, mosi);
+        sck.set_to_push_pull_output()
+            .connect_peripheral_to_output(spi.sclk_signal());
+
+        mosi.set_to_push_pull_output()
+            .connect_peripheral_to_output(spi.mosi_signal());
+
+        Self::new_internal(spi, frequency, mode, peripheral_clock_control, clocks)
+    }
+
+    /// Constructs an SPI instance in 8bit dataframe mode with only MOSI
+    /// connected. This might be useful for (ab)using SPI to  implement
+    /// other protocols by bitbanging (WS2812B, onewire, generating arbitrary
+    /// waveforms…)
+    pub fn new_mosi_only<MOSI: OutputPin>(
+        spi: impl Peripheral<P = T> + 'd,
+        mosi: impl Peripheral<P = MOSI> + 'd,
+        frequency: HertzU32,
+        mode: SpiMode,
+        peripheral_clock_control: &mut PeripheralClockControl,
+        clocks: &Clocks,
+    ) -> Spi<'d, T, FullDuplexMode> {
+        crate::into_ref!(spi, mosi);
+        mosi.set_to_push_pull_output()
+            .connect_peripheral_to_output(spi.mosi_signal());
+
+        Self::new_internal(spi, frequency, mode, peripheral_clock_control, clocks)
+>>>>>>> 0b4e5e71799355f3a2c37550a53b756c07df367d:esp-hal-common/src/spi.rs
     }
 
     pub(crate) fn new_internal(
