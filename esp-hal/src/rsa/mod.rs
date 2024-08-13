@@ -1,12 +1,17 @@
-//! # RSA Accelerator support.
+//! # Rivest–Shamir–Adleman (RSA) Accelerator.
 //!
 //! ## Overview
-//! The `RSA` driver provides a set of functions to accelerate `RSA
-//! (Rivest–Shamir–Adleman)` cryptographic operations on ESP chips. `RSA` is a
-//! widely used `public-key` cryptographic algorithm that involves complex
-//! mathematical computations, and the `RSA` accelerator on `ESP` chips is
-//! designed to optimize these computations for faster performance.
+//! The RSA Accelerator provides hardware support for high precision computation
+//! used in various RSA asymmetric cipher algorithms by significantly reducing
+//! their software complexity. Compared with RSA algorithms implemented solely
+//! in software, this hardware accelerator can speed up RSA algorithms
+//! significantly.
 //!
+//! ## Configuration
+//! The RSA Accelerator also supports operands of different lengths, which
+//! provides more flexibility during the computation.
+//!
+//! ## Usage
 //! Implementation details;
 //!    * The driver uses low-level peripheral access to read and write data
 //!      from/to the `RSA` peripheral.
@@ -19,48 +24,15 @@
 //!      cryptographic operations on `ESP` chips, allowing developers to
 //!      leverage the `RSA accelerator` for improved performance.
 //!
-//! ## Examples
-//! ### Initialization
-//! ```no_run
-//! let peripherals = Peripherals::take();
-//! let mut system = peripherals.SYSTEM.split();
-//!
-//! let mut rsa = Rsa::new(peripherals.RSA);
-//! ```
-//!  
-//! ### Async (modular exponentiation)
-//! ```no_run
-//! #[embassy_executor::task]
-//! async fn mod_exp_example(mut rsa: Rsa<'static>) {
-//!     let mut outbuf = [0_u32; U512::LIMBS];
-//!     let mut mod_exp = RsaModularExponentiation::<operand_sizes::Op512>::new(
-//!         &mut rsa,
-//!         BIGNUM_2.as_words(),
-//!         BIGNUM_3.as_words(),
-//!         compute_mprime(&BIGNUM_3),
-//!     );
-//!     let r = compute_r(&BIGNUM_3);
-//!     let base = &BIGNUM_1.as_words();
-//!     mod_exp
-//!         .exponentiation(base, r.as_words(), &mut outbuf)
-//!         .await;
-//!     let residue_params = DynResidueParams::new(&BIGNUM_3);
-//!     let residue = DynResidue::new(&BIGNUM_1, residue_params);
-//!     let sw_out = residue.pow(&BIGNUM_2);
-//!     assert_eq!(U512::from_words(outbuf), sw_out.retrieve());
-//!     println!("modular exponentiation done");
-//! }
-//! ```
-
 //! This peripheral supports `async` on every available chip except of `esp32`
 //! (to be solved).
 //!
-//! ⚠️: The examples for RSA peripheral are quite extensive, so for a more
-//! detailed study of how to use this driver please visit [the repository
-//! with corresponding example].
+//! ## Examples
+//! ### Modular Exponentiation, Modular Multiplication, and Multiplication
+//! Visit the [RSA] test for an example of using the peripheral.
 //!
 //! [nb]: https://docs.rs/nb/1.1.0/nb/
-//! [the repository with corresponding example]: https://github.com/esp-rs/esp-hal/blob/main/esp32-hal/examples/rsa.rs
+//! [the repository with corresponding example]: https://github.com/esp-rs/esp-hal/blob/main/hil-test/tests/rsa.rs
 
 use core::{marker::PhantomData, ptr::copy_nonoverlapping};
 
@@ -69,6 +41,7 @@ use crate::{
     peripheral::{Peripheral, PeripheralRef},
     peripherals::RSA,
     system::{Peripheral as PeripheralEnable, PeripheralClockControl},
+    InterruptConfigurable,
 };
 
 #[cfg_attr(esp32s2, path = "esp32sX.rs")]
@@ -87,12 +60,30 @@ pub struct Rsa<'d, DM: crate::Mode> {
     phantom: PhantomData<DM>,
 }
 
+impl<'d, DM: crate::Mode> Rsa<'d, DM> {
+    fn internal_set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(crate::peripherals::Interrupt::RSA, handler.handler());
+            crate::interrupt::enable(crate::peripherals::Interrupt::RSA, handler.priority())
+                .unwrap();
+        }
+    }
+}
+
 impl<'d> Rsa<'d, crate::Blocking> {
     /// Create a new instance in [crate::Blocking] mode.
     ///
     /// Optionally an interrupt handler can be bound.
-    pub fn new(rsa: impl Peripheral<P = RSA> + 'd, interrupt: Option<InterruptHandler>) -> Self {
-        Self::new_internal(rsa, interrupt)
+    pub fn new(rsa: impl Peripheral<P = RSA> + 'd) -> Self {
+        Self::new_internal(rsa)
+    }
+}
+
+impl<'d> crate::private::Sealed for Rsa<'d, crate::Blocking> {}
+
+impl<'d> InterruptConfigurable for Rsa<'d, crate::Blocking> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        self.internal_set_interrupt_handler(handler);
     }
 }
 
@@ -100,29 +91,17 @@ impl<'d> Rsa<'d, crate::Blocking> {
 impl<'d> Rsa<'d, crate::Async> {
     /// Create a new instance in [crate::Blocking] mode.
     pub fn new_async(rsa: impl Peripheral<P = RSA> + 'd) -> Self {
-        Self::new_internal(rsa, Some(asynch::rsa_interrupt_handler))
+        let mut this = Self::new_internal(rsa);
+        this.internal_set_interrupt_handler(asynch::rsa_interrupt_handler);
+        this
     }
 }
 
 impl<'d, DM: crate::Mode> Rsa<'d, DM> {
-    fn new_internal(
-        rsa: impl Peripheral<P = RSA> + 'd,
-        interrupt: Option<InterruptHandler>,
-    ) -> Self {
+    fn new_internal(rsa: impl Peripheral<P = RSA> + 'd) -> Self {
         crate::into_ref!(rsa);
 
         PeripheralClockControl::enable(PeripheralEnable::Rsa);
-
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(
-                    crate::peripherals::Interrupt::RSA,
-                    interrupt.handler(),
-                );
-                crate::interrupt::enable(crate::peripherals::Interrupt::RSA, interrupt.priority())
-                    .unwrap();
-            }
-        }
 
         Self {
             rsa,
@@ -384,7 +363,7 @@ pub(crate) mod asynch {
             r: &T::InputType,
             outbuf: &mut T::InputType,
         ) {
-            self.start_exponentiation(&base, &r);
+            self.start_exponentiation(base, r);
             RsaFuture::new(&self.rsa.rsa).await;
             self.read_results(outbuf);
         }

@@ -1,7 +1,10 @@
 //! This shows a very basic example of running code on the ULP RISCV core.
 //!
-//! Code on ULP core just increments a counter and blinks GPIO 1. The current
+//! Code on ULP core just increments a counter and blinks with LED. The current
 //! value is printed by the HP core.
+//!
+//! The following wiring is assumed:
+//! - LED => GPIO1
 
 //% CHIPS: esp32s2 esp32s3
 
@@ -10,7 +13,7 @@
 
 use esp_backtrace as _;
 use esp_hal::{
-    gpio::{rtc_io::*, IO},
+    gpio::{rtc_io::*, Io},
     peripherals::Peripherals,
     prelude::*,
     ulp_core,
@@ -21,8 +24,8 @@ use esp_println::{print, println};
 fn main() -> ! {
     let peripherals = Peripherals::take();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let pin = io.pins.gpio1.into_low_power().into_push_pull_output();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let pin = LowPowerOutput::new(io.pins.gpio1);
 
     let mut ulp_core = ulp_core::UlpCore::new(peripherals.ULP_RISCV_CORE);
 

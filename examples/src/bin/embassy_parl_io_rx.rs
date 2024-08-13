@@ -1,14 +1,14 @@
 //! This shows using Parallel IO to input 4 bit parallel data at 1MHz clock
 //! rate.
 //!
-//! Uses GPIO 1, 2, 3 and 4 as the data pins.
+//! The following wiring is assumed:
+//! - Data pins => GPIO1, GPIO2, GPIO3, and GPIO4.
 
 //% CHIPS: esp32c6 esp32h2
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -17,42 +17,51 @@ use esp_hal::{
     clock::ClockControl,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    embassy,
-    gpio::IO,
-    parl_io::{BitPackOrder, NoClkPin, ParlIoRxOnly, RxFourBits},
+    gpio::Io,
+    parl_io::{no_clk_pin, BitPackOrder, ParlIoRxOnly, RxFourBits},
     peripherals::Peripherals,
     prelude::*,
-    timer::TimerGroup,
+    system::SystemControl,
+    timer::{systimer::SystemTimer, ErasedTimer, OneShotTimer},
 };
 use esp_println::println;
 
-#[main]
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timg0);
+    let systimer = SystemTimer::new(peripherals.SYSTIMER);
+    let alarm0: ErasedTimer = systimer.alarm0.into();
+    let timers = [OneShotTimer::new(alarm0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let (_, mut tx_descriptors, rx_buffer, mut rx_descriptors) = dma_buffers!(0, 32000);
+    let (_, _, rx_buffer, rx_descriptors) = dma_buffers!(0, 32000);
 
     let dma = Dma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
-    let rx_pins = RxFourBits::new(io.pins.gpio1, io.pins.gpio2, io.pins.gpio3, io.pins.gpio4);
+    let mut rx_pins = RxFourBits::new(io.pins.gpio1, io.pins.gpio2, io.pins.gpio3, io.pins.gpio4);
 
     let parl_io = ParlIoRxOnly::new(
         peripherals.PARL_IO,
-        dma_channel.configure_for_async(
-            false,
-            &mut tx_descriptors,
-            &mut rx_descriptors,
-            DmaPriority::Priority0,
-        ),
+        dma_channel.configure_for_async(false, DmaPriority::Priority0),
+        rx_descriptors,
         1.MHz(),
         &clocks,
     )
@@ -60,13 +69,17 @@ async fn main(_spawner: Spawner) {
 
     let mut parl_io_rx = parl_io
         .rx
-        .with_config(rx_pins, NoClkPin, BitPackOrder::Msb, Some(0xfff))
+        .with_config(&mut rx_pins, no_clk_pin(), BitPackOrder::Msb, Some(0xfff))
         .unwrap();
 
     let buffer = rx_buffer;
     loop {
         parl_io_rx.read_dma_async(buffer).await.unwrap();
-        println!("Received: {:02x?} ...", &buffer[..30]);
+        println!(
+            "Received: {:02x?} ... {:02x?}",
+            &buffer[..30],
+            &buffer[(buffer.len() - 30)..]
+        );
 
         Timer::after(Duration::from_millis(500)).await;
     }

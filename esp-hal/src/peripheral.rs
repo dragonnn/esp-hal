@@ -6,6 +6,7 @@
 //! exclusive reference to a peripheral. It offers memory efficiency benefits
 //! for zero-sized types.
 //!
+//! ## Configuration
 //! The `PeripheralRef` struct is used to access and interact with peripherals.
 //! It implements the `Deref` and `DerefMut` traits, allowing you to dereference
 //! it to access the underlying peripheral. It also provides methods for cloning
@@ -20,20 +21,6 @@
 //! The module also includes a `peripheral_macros` module, which contains macros
 //! for generating peripheral structs and associated traits based on
 //! configuration options.
-//!
-//! ## Examples
-//!
-//! ### Initialization
-//! ```no_run
-//! let peripherals = Peripherals::take();
-//! ```
-//! ### Accessing peripherals
-//! ```no_run
-//! let mut rtc = Rtc::new(peripherals.LPWR);
-//! ```
-//! ```no_run
-//! let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-//! ```
 
 use core::{
     marker::PhantomData,
@@ -46,7 +33,7 @@ use core::{
 /// dedicated struct is memory efficiency:
 ///
 /// Peripheral singletons are typically either zero-sized (for concrete
-/// peripehrals like `PA9` or `Spi4`) or very small (for example `AnyPin` which
+/// peripherals like `PA9` or `Spi4`) or very small (for example `AnyPin` which
 /// is 1 byte). However `&mut T` is always 4 bytes for 32-bit targets, even if T
 /// is zero-sized. PeripheralRef stores a copy of `T` instead, so it's the same
 /// size.
@@ -139,7 +126,7 @@ impl<'a, T> DerefMut for PeripheralRef<'a, T> {
 ///
 /// For example, if you have a driver with a constructor like this:
 ///
-/// ```ignore
+/// ```rust, ignore
 /// impl<'d, T: Instance> Twim<'d, T> {
 ///     pub fn new(
 ///         twim: impl Peripheral<P = T> + 'd,
@@ -154,14 +141,14 @@ impl<'a, T> DerefMut for PeripheralRef<'a, T> {
 /// You may call it with owned peripherals, which yields an instance that can
 /// live forever (`'static`):
 ///
-/// ```ignore
+/// ```rust, ignore
 /// let mut twi: Twim<'static, ...> = Twim::new(p.TWISPI0, irq, p.P0_03, p.P0_04, config);
 /// ```
 ///
 /// Or you may call it with borrowed peripherals, which yields an instance that
 /// can only live for as long as the borrows last:
 ///
-/// ```ignore
+/// ```rust, ignore
 /// let mut twi: Twim<'_, ...> = Twim::new(&mut p.TWISPI0, &mut irq, &mut p.P0_03, &mut p.P0_04, config);
 /// ```
 ///
@@ -220,6 +207,16 @@ impl<T> crate::private::Sealed for &mut T where T: crate::private::Sealed {}
 mod peripheral_macros {
     #[doc(hidden)]
     #[macro_export]
+    macro_rules! impl_dma_eligible {
+        ($name:ident,$dma:ident) => {
+            impl $crate::dma::DmaEligible for $name {
+                const DMA_PERIPHERAL: $crate::dma::DmaPeripheral = $crate::dma::DmaPeripheral::$dma;
+            }
+        };
+    }
+
+    #[doc(hidden)]
+    #[macro_export]
     macro_rules! peripherals {
         ($($(#[$cfg:meta])? $name:ident <= $from_pac:tt $(($($interrupt:ident),*))? ),*$(,)?) => {
 
@@ -229,6 +226,49 @@ mod peripheral_macros {
                 $(
                     $crate::create_peripheral!($(#[$cfg])? $name <= $from_pac);
                 )*
+
+
+                $crate::impl_dma_eligible!(SPI2,Spi2);
+                #[cfg(any(pdma, esp32s3))]
+                $crate::impl_dma_eligible!(SPI3,Spi3);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM1,Mem2Mem1);
+                #[cfg(any(esp32c3, esp32c6, esp32h2, esp32s3))]
+                $crate::impl_dma_eligible!(UHCI0,Uhci0);
+                #[cfg(any(esp32, esp32s2, esp32c3, esp32c6, esp32h2, esp32s3))]
+                $crate::impl_dma_eligible!(I2S0,I2s0);
+                #[cfg(any(esp32, esp32s3))]
+                $crate::impl_dma_eligible!(I2S1,I2s1);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM4,Mem2Mem4);
+                #[cfg(esp32s3)]
+                $crate::impl_dma_eligible!(LCD_CAM,LcdCam);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM5,Mem2Mem5);
+                #[cfg(not(esp32c2))]
+                $crate::impl_dma_eligible!(AES,Aes);
+                #[cfg(gdma)]
+                $crate::impl_dma_eligible!(SHA,Sha);
+                #[cfg(any(esp32c3, esp32c6, esp32h2, esp32s3))]
+                $crate::impl_dma_eligible!(ADC1,Adc);
+                #[cfg(any(esp32c3, esp32s3))]
+                $crate::impl_dma_eligible!(ADC2,Adc);
+                #[cfg(esp32s3)]
+                $crate::impl_dma_eligible!(RMT,Rmt);
+                #[cfg(parl_io)]
+                $crate::impl_dma_eligible!(PARL_IO,ParlIo);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM10,Mem2Mem10);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM11,Mem2Mem11);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM12,Mem2Mem12);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM13,Mem2Mem13);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM14,Mem2Mem14);
+                #[cfg(any(esp32c6, esp32h2))]
+                $crate::impl_dma_eligible!(MEM2MEM15,Mem2Mem15);
             }
 
             #[allow(non_snake_case)]

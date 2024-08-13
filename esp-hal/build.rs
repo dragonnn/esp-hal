@@ -10,25 +10,21 @@ use std::{
 use esp_build::assert_unique_used_features;
 use esp_metadata::{Chip, Config};
 
+#[cfg(debug_assertions)]
+esp_build::warning! {"
+WARNING: use --release
+  We *strongly* recommend using release profile when building esp-hal.
+  The dev profile can potentially be one or more orders of magnitude
+  slower than release, and may cause issues with timing-senstive
+  peripherals and/or devices.
+"}
+
 fn main() -> Result<(), Box<dyn Error>> {
     // NOTE: update when adding new device support!
     // Ensure that exactly one chip has been specified:
     assert_unique_used_features!(
-        "esp32", "esp32c2", "esp32c3", "esp32c6", "esp32h2", "esp32p4", "esp32s2", "esp32s3"
+        "esp32", "esp32c2", "esp32c3", "esp32c6", "esp32h2", "esp32s2", "esp32s3"
     );
-
-    // If the `embassy` feature is enabled, ensure that a time driver implementation
-    // is available:
-    #[cfg(feature = "embassy")]
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "esp32")] {
-            assert_unique_used_features!("embassy-time-timg0");
-        } else if #[cfg(feature = "esp32s2")] {
-            assert_unique_used_features!("embassy-time-systick-80mhz", "embassy-time-timg0");
-        } else {
-            assert_unique_used_features!("embassy-time-systick-16mhz", "embassy-time-timg0");
-        }
-    }
 
     #[cfg(all(
         feature = "flip-link",
@@ -48,8 +44,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         "esp32c6"
     } else if cfg!(feature = "esp32h2") {
         "esp32h2"
-    } else if cfg!(feature = "esp32p4") {
-        "esp32p4"
     } else if cfg!(feature = "esp32s2") {
         "esp32s2"
     } else if cfg!(feature = "esp32s3") {
@@ -121,6 +115,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             "ld/riscv/hal-defaults.x",
             out.join("hal-defaults.x"),
         )?;
+    }
+
+    // needed for before_snippet! macro
+    let host = env::var_os("HOST").expect("HOST not set");
+    if let Some("windows") = host.to_str().unwrap().split('-').nth(2) {
+        println!("cargo:rustc-cfg=host_os=\"windows\"");
     }
 
     // With the architecture-specific linker scripts taken care of, we can copy all

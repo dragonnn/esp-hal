@@ -1,9 +1,7 @@
 //! # Direct Memory Access
 //!
 //! ## Overview
-//!
-//! The `pdma` module is part of the DMA (Direct Memory Access) driver of
-//! `ESP32` and `ESP32-S2`.
+//! The `pdma` module is part of the DMA driver of `ESP32` and `ESP32-S2`.
 //!
 //! This module provides efficient direct data transfer capabilities between
 //! peripherals and memory without involving the CPU. It enables bidirectional
@@ -23,10 +21,12 @@ macro_rules! ImplSpiChannel {
     ($num: literal) => {
         paste::paste! {
             #[non_exhaustive]
+            #[doc(hidden)]
             pub struct [<Channel $num InterruptBinder>] {}
 
+            impl $crate::private::Sealed for [<Channel $num InterruptBinder>] {}
+
             impl InterruptBinder for [<Channel $num InterruptBinder>] {
-                #[cfg(feature = "vectored")]
                 fn set_isr(handler: $crate::interrupt::InterruptHandler) {
                     let mut spi = unsafe { $crate::peripherals::[< SPI $num >]::steal() };
                     spi.[< bind_spi $num _dma_interrupt>](handler.handler());
@@ -34,13 +34,20 @@ macro_rules! ImplSpiChannel {
                 }
             }
 
+            #[doc = concat!("DMA channel suitable for SPI", $num)]
             #[non_exhaustive]
             pub struct [<Spi $num DmaChannel>] {}
 
-            impl ChannelTypes for [<Spi $num DmaChannel>] {
+            impl DmaChannel for [<Spi $num DmaChannel>] {
+                type Channel = [<Spi $num DmaChannel>];
+                type Rx = [<Spi $num DmaChannelRxImpl>];
+                type Tx = [<Spi $num DmaChannelTxImpl>];
                 type P = [<Spi $num DmaSuitablePeripheral>];
-                type Tx<'a> = ChannelTx<'a,[<Spi $num DmaChannelTxImpl>], [<Spi $num DmaChannel>]>;
-                type Rx<'a> = ChannelRx<'a,[<Spi $num DmaChannelRxImpl>], [<Spi $num DmaChannel>]>;
+            }
+
+            impl $crate::private::Sealed for [<Spi $num DmaChannel>] {}
+
+            impl ChannelTypes for [<Spi $num DmaChannel>] {
                 type Binder = [<Channel $num InterruptBinder>];
             }
 
@@ -55,12 +62,12 @@ macro_rules! ImplSpiChannel {
                             2 => {
                                 dport
                                 .spi_dma_chan_sel()
-                                .modify(|_, w| w.spi2_dma_chan_sel().variant(1));
+                                .modify(|_, w| unsafe { w.spi2_dma_chan_sel().bits(1) });
                             },
                             3 => {
                                 dport
                                 .spi_dma_chan_sel()
-                                .modify(|_, w| w.spi3_dma_chan_sel().variant(2));
+                                .modify(|_, w| unsafe { w.spi3_dma_chan_sel().bits(2) });
                             },
                             _ => panic!("Only SPI2 and SPI3 supported"),
                         }
@@ -142,8 +149,7 @@ macro_rules! ImplSpiChannel {
 
                 fn is_out_done() -> bool {
                     let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
-                    // FIXME this should be out_total_eof_int_raw? but on esp32 this interrupt doesn't seem to fire
-                    spi.dma_int_raw().read().out_eof().bit()
+                    spi.dma_int_raw().read().out_total_eof().bit()
                 }
 
                 fn last_out_dscr_address() -> usize {
@@ -227,11 +233,6 @@ macro_rules! ImplSpiChannel {
                     spi.dma_int_raw().read().in_done().bit()
                 }
 
-                fn last_in_dscr_address() -> usize {
-                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
-                    spi.inlink_dscr_bf0().read().dma_inlink_dscr_bf0().bits() as usize
-                }
-
                 fn is_listening_in_eof() -> bool {
                     let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
                     spi.dma_int_ena().read().in_suc_eof().bit_is_set()
@@ -286,10 +287,73 @@ macro_rules! ImplSpiChannel {
                     let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
                     spi.dma_int_ena().read().in_done().bit()
                 }
+
+                fn listen_in_descriptor_error() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.inlink_dscr_error().set_bit())
+                }
+
+                fn unlisten_in_descriptor_error() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.inlink_dscr_error().clear_bit())
+                }
+
+                fn is_listening_in_descriptor_error() -> bool {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().read().inlink_dscr_error().bit()
+                }
+
+                fn listen_in_descriptor_error_dscr_empty() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.inlink_dscr_empty().set_bit())
+                }
+
+                fn unlisten_in_descriptor_error_dscr_empty() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.inlink_dscr_empty().clear_bit())
+                }
+
+                fn is_listening_in_descriptor_error_dscr_empty() -> bool {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().read().inlink_dscr_empty().bit()
+                }
+
+                fn listen_in_descriptor_error_err_eof() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.in_err_eof().set_bit())
+                }
+
+                fn unlisten_in_descriptor_error_err_eof() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.in_err_eof().clear_bit())
+                }
+
+                fn is_listening_in_descriptor_error_err_eof() -> bool{
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().read().in_err_eof().bit()
+                }
+
+                fn listen_out_descriptor_error() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.outlink_dscr_error().set_bit())
+                }
+
+                fn unlisten_out_descriptor_error() {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().modify(|_,w| w.outlink_dscr_error().clear_bit())
+                }
+
+                fn is_listening_out_descriptor_error() -> bool {
+                    let spi = unsafe { &*crate::peripherals::[<SPI $num>]::PTR };
+                    spi.dma_int_ena().read().outlink_dscr_error().bit()
+                }
             }
 
             #[non_exhaustive]
+            #[doc(hidden)]
             pub struct [<Spi $num DmaChannelTxImpl>] {}
+
+            impl $crate::private::Sealed for [<Spi $num DmaChannelTxImpl>] {}
 
             impl<'a> TxChannel<[<Spi $num DmaChannel>]> for [<Spi $num DmaChannelTxImpl>] {
                 #[cfg(feature = "async")]
@@ -300,7 +364,10 @@ macro_rules! ImplSpiChannel {
             }
 
             #[non_exhaustive]
+            #[doc(hidden)]
             pub struct [<Spi $num DmaChannelRxImpl>] {}
+
+            impl $crate::private::Sealed for [<Spi $num DmaChannelRxImpl>] {}
 
             impl<'a> RxChannel<[<Spi $num DmaChannel>]> for [<Spi $num DmaChannelRxImpl>] {
                 #[cfg(feature = "async")]
@@ -310,6 +377,7 @@ macro_rules! ImplSpiChannel {
                 }
             }
 
+            #[doc = concat!("Creates a channel for SPI", $num)]
             #[non_exhaustive]
             pub struct [<Spi $num DmaChannelCreator>] {}
 
@@ -321,8 +389,6 @@ macro_rules! ImplSpiChannel {
                 pub fn configure<'a>(
                     self,
                     burst_mode: bool,
-                    tx_descriptors: &'a mut [DmaDescriptor],
-                    rx_descriptors: &'a mut [DmaDescriptor],
                     priority: DmaPriority,
                 ) -> Channel<'a, [<Spi $num DmaChannel>], $crate::Blocking> {
                     let mut tx_impl = [<Spi $num DmaChannelTxImpl>] {};
@@ -332,8 +398,8 @@ macro_rules! ImplSpiChannel {
                     rx_impl.init(burst_mode, priority);
 
                     Channel {
-                        tx: ChannelTx::new(tx_descriptors, tx_impl, burst_mode),
-                        rx: ChannelRx::new(rx_descriptors, rx_impl, burst_mode),
+                        tx: ChannelTx::new(tx_impl, burst_mode),
+                        rx: ChannelRx::new(rx_impl, burst_mode),
                         phantom: PhantomData,
                     }
                 }
@@ -346,8 +412,6 @@ macro_rules! ImplSpiChannel {
                 pub fn configure_for_async<'a>(
                     self,
                     burst_mode: bool,
-                    tx_descriptors: &'a mut [DmaDescriptor],
-                    rx_descriptors: &'a mut [DmaDescriptor],
                     priority: DmaPriority,
                 ) -> Channel<'a, [<Spi $num DmaChannel>], $crate::Async> {
                     let mut tx_impl = [<Spi $num DmaChannelTxImpl>] {};
@@ -359,8 +423,8 @@ macro_rules! ImplSpiChannel {
                     <[<Spi $num DmaChannel>] as ChannelTypes>::Binder::set_isr(super::asynch::interrupt::[< interrupt_handler_spi $num _dma >]);
 
                     Channel {
-                        tx: ChannelTx::new(tx_descriptors, tx_impl, burst_mode),
-                        rx: ChannelRx::new(rx_descriptors, rx_impl, burst_mode),
+                        tx: ChannelTx::new(tx_impl, burst_mode),
+                        rx: ChannelRx::new(rx_impl, burst_mode),
                         phantom: PhantomData,
                     }
                 }
@@ -373,10 +437,12 @@ macro_rules! ImplI2sChannel {
     ($num: literal, $peripheral: literal) => {
         paste::paste! {
             #[non_exhaustive]
+            #[doc(hidden)]
             pub struct [<Channel $num InterruptBinder>] {}
 
+            impl $crate::private::Sealed for [<Channel $num InterruptBinder>] {}
+
             impl InterruptBinder for [<Channel $num InterruptBinder>] {
-                #[cfg(feature = "vectored")]
                 fn set_isr(handler:  $crate::interrupt::InterruptHandler) {
                     let mut i2s = unsafe { $crate::peripherals::[< I2S $num >]::steal() };
                     i2s.[< bind_i2s $num _interrupt>](handler.handler());
@@ -384,12 +450,19 @@ macro_rules! ImplI2sChannel {
                 }
             }
 
+            #[doc = concat!("DMA channel suitable for I2S", $num)]
             pub struct [<I2s $num DmaChannel>] {}
 
-            impl ChannelTypes for [<I2s $num DmaChannel>] {
+            impl $crate::private::Sealed for [<I2s $num DmaChannel>] {}
+
+            impl DmaChannel for [<I2s $num DmaChannel>] {
+                type Channel = [<I2s $num DmaChannel>];
+                type Rx = [<I2s $num DmaChannelRxImpl>];
+                type Tx = [<I2s $num DmaChannelTxImpl>];
                 type P = [<I2s $num DmaSuitablePeripheral>];
-                type Tx<'a> = ChannelTx<'a,[<I2s $num DmaChannelTxImpl>], [<I2s $num DmaChannel>]>;
-                type Rx<'a> = ChannelRx<'a,[<I2s $num DmaChannelRxImpl>], [<I2s $num DmaChannel>]>;
+            }
+
+            impl ChannelTypes for [<I2s $num DmaChannel>] {
                 type Binder = [<Channel $num InterruptBinder>];
             }
 
@@ -557,11 +630,6 @@ macro_rules! ImplI2sChannel {
                     reg_block.int_raw().read().in_done().bit()
                 }
 
-                fn last_in_dscr_address() -> usize {
-                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
-                    reg_block.inlink_dscr_bf0().read().inlink_dscr_bf0().bits() as usize
-                }
-
                 fn is_listening_in_eof() -> bool {
                     let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
                     reg_block.int_ena().read().in_suc_eof().bit()
@@ -616,9 +684,72 @@ macro_rules! ImplI2sChannel {
                     let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
                     reg_block.int_ena().read().in_done().bit()
                 }
+
+                fn listen_in_descriptor_error(){
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.in_dscr_err().set_bit());
+                }
+
+                fn unlisten_in_descriptor_error() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.in_dscr_err().clear_bit());
+                }
+
+                fn is_listening_in_descriptor_error() -> bool {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().read().in_dscr_err().bit()
+                }
+
+                fn listen_in_descriptor_error_dscr_empty() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.in_dscr_empty().set_bit());
+                }
+
+                fn unlisten_in_descriptor_error_dscr_empty() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.in_dscr_empty().clear_bit());
+                }
+
+                fn is_listening_in_descriptor_error_dscr_empty() -> bool{
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().read().in_dscr_empty().bit()
+                }
+
+                fn listen_in_descriptor_error_err_eof() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.in_err_eof().set_bit());
+                }
+
+                fn unlisten_in_descriptor_error_err_eof() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.in_err_eof().clear_bit());
+                }
+
+                fn is_listening_in_descriptor_error_err_eof() -> bool{
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().read().in_err_eof().bit()
+                }
+
+                fn listen_out_descriptor_error() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.out_dscr_err().set_bit());
+                }
+
+                fn unlisten_out_descriptor_error() {
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().modify(|_, w| w.out_dscr_err().clear_bit());
+                }
+
+                fn is_listening_out_descriptor_error() -> bool{
+                    let reg_block = unsafe { &*crate::peripherals::[<$peripheral>]::PTR };
+                    reg_block.int_ena().read().out_dscr_err().bit()
+                }
             }
 
+            #[doc(hidden)]
             pub struct [<I2s $num DmaChannelTxImpl>] {}
+
+            impl $crate::private::Sealed for [<I2s $num DmaChannelTxImpl>] {}
 
             impl<'a> TxChannel<[<I2s $num DmaChannel>]> for [<I2s $num DmaChannelTxImpl>] {
                 #[cfg(feature = "async")]
@@ -628,7 +759,10 @@ macro_rules! ImplI2sChannel {
                 }
             }
 
+            #[doc(hidden)]
             pub struct [<I2s $num DmaChannelRxImpl>] {}
+
+            impl $crate::private::Sealed for [<I2s $num DmaChannelRxImpl>] {}
 
             impl<'a> RxChannel<[<I2s $num DmaChannel>]> for [<I2s $num DmaChannelRxImpl>] {
                 #[cfg(feature = "async")]
@@ -638,6 +772,7 @@ macro_rules! ImplI2sChannel {
                 }
             }
 
+            #[doc = concat!("Creates a channel for I2S", $num)]
             pub struct [<I2s $num DmaChannelCreator>] {}
 
             impl [<I2s $num DmaChannelCreator>] {
@@ -648,8 +783,6 @@ macro_rules! ImplI2sChannel {
                 pub fn configure<'a>(
                     self,
                     burst_mode: bool,
-                    tx_descriptors: &'a mut [DmaDescriptor],
-                    rx_descriptors: &'a mut [DmaDescriptor],
                     priority: DmaPriority,
                 ) -> Channel<'a, [<I2s $num DmaChannel>], $crate::Blocking> {
                     let mut tx_impl = [<I2s $num DmaChannelTxImpl>] {};
@@ -659,8 +792,8 @@ macro_rules! ImplI2sChannel {
                     rx_impl.init(burst_mode, priority);
 
                     Channel {
-                        tx: ChannelTx::new(tx_descriptors, tx_impl, burst_mode),
-                        rx: ChannelRx::new(rx_descriptors, rx_impl, burst_mode),
+                        tx: ChannelTx::new(tx_impl, burst_mode),
+                        rx: ChannelRx::new(rx_impl, burst_mode),
                         phantom: PhantomData,
                     }
                 }
@@ -673,8 +806,6 @@ macro_rules! ImplI2sChannel {
                 pub fn configure_for_async<'a>(
                     self,
                     burst_mode: bool,
-                    tx_descriptors: &'a mut [DmaDescriptor],
-                    rx_descriptors: &'a mut [DmaDescriptor],
                     priority: DmaPriority,
                 ) -> Channel<'a, [<I2s $num DmaChannel>], $crate::Async> {
                     let mut tx_impl = [<I2s $num DmaChannelTxImpl>] {};
@@ -686,8 +817,8 @@ macro_rules! ImplI2sChannel {
                     <[<I2s $num DmaChannel>] as ChannelTypes>::Binder::set_isr(super::asynch::interrupt::[< interrupt_handler_i2s $num >]);
 
                     Channel {
-                        tx: ChannelTx::new(tx_descriptors, tx_impl, burst_mode),
-                        rx: ChannelRx::new(rx_descriptors, rx_impl, burst_mode),
+                        tx: ChannelTx::new(tx_impl, burst_mode),
+                        rx: ChannelRx::new(rx_impl, burst_mode),
                         phantom: PhantomData,
                     }
                 }
@@ -696,12 +827,14 @@ macro_rules! ImplI2sChannel {
     };
 }
 
+#[doc(hidden)]
 #[non_exhaustive]
 pub struct Spi2DmaSuitablePeripheral {}
 impl PeripheralMarker for Spi2DmaSuitablePeripheral {}
 impl SpiPeripheral for Spi2DmaSuitablePeripheral {}
 impl Spi2Peripheral for Spi2DmaSuitablePeripheral {}
 
+#[doc(hidden)]
 #[non_exhaustive]
 pub struct Spi3DmaSuitablePeripheral {}
 impl PeripheralMarker for Spi3DmaSuitablePeripheral {}
@@ -711,6 +844,7 @@ impl Spi3Peripheral for Spi3DmaSuitablePeripheral {}
 ImplSpiChannel!(2);
 ImplSpiChannel!(3);
 
+#[doc(hidden)]
 #[non_exhaustive]
 pub struct I2s0DmaSuitablePeripheral {}
 impl PeripheralMarker for I2s0DmaSuitablePeripheral {}
@@ -719,6 +853,7 @@ impl I2s0Peripheral for I2s0DmaSuitablePeripheral {}
 
 ImplI2sChannel!(0, "I2S0");
 
+#[doc(hidden)]
 #[non_exhaustive]
 pub struct I2s1DmaSuitablePeripheral {}
 impl PeripheralMarker for I2s1DmaSuitablePeripheral {}
@@ -733,9 +868,13 @@ ImplI2sChannel!(1, "I2S1");
 /// This offers the available DMA channels.
 pub struct Dma<'d> {
     _inner: PeripheralRef<'d, crate::peripherals::DMA>,
+    /// DMA channel for SPI2
     pub spi2channel: Spi2DmaChannelCreator,
+    /// DMA channel for SPI3
     pub spi3channel: Spi3DmaChannelCreator,
+    /// DMA channel for I2S0
     pub i2s0channel: I2s0DmaChannelCreator,
+    /// DMA channel for I2S1
     #[cfg(esp32)]
     pub i2s1channel: I2s1DmaChannelCreator,
 }

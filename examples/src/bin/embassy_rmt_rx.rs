@@ -1,24 +1,25 @@
 //! Demonstrates decoding pulse sequences with RMT
-//! Connect GPIO5 to GPIO4
+//!
+//! The following wiring is assumed:
+//! - Connect GPIO4 and GPIO5
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers embedded-hal-02
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_hal_02::digital::v2::ToggleableOutputPin;
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
-    embassy::{self},
-    gpio::{Gpio5, Output, PushPull, IO},
+    gpio::{Gpio5, Io, Level, Output},
     peripherals::Peripherals,
     prelude::*,
     rmt::{asynch::RxChannelAsync, PulseCode, Rmt, RxChannelConfig, RxChannelCreatorAsync},
+    system::SystemControl,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
 };
 use esp_println::{print, println};
 
@@ -27,28 +28,41 @@ const WIDTH: usize = 80;
 #[cfg(debug_assertions)]
 compile_error!("Run this example in release mode");
 
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
 #[embassy_executor::task]
-async fn signal_task(mut pin: Gpio5<Output<PushPull>>) {
+async fn signal_task(mut pin: Output<'static, Gpio5>) {
     loop {
         for _ in 0..10 {
-            pin.toggle().unwrap();
+            pin.toggle();
             Timer::after(Duration::from_micros(10)).await;
         }
         Timer::after(Duration::from_millis(1000)).await;
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     println!("Init!");
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timer_group0 = esp_hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timer_group0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timers = [OneShotTimer::new(timer0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32h2")] {
@@ -76,7 +90,7 @@ async fn main(spawner: Spawner) {
     }
 
     spawner
-        .spawn(signal_task(io.pins.gpio5.into_push_pull_output()))
+        .spawn(signal_task(Output::new(io.pins.gpio5, Level::Low)))
         .unwrap();
 
     let mut data = [PulseCode {

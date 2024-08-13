@@ -1,16 +1,22 @@
-//! Control LED on GPIO1 by the BOOT-BUTTON via ETM
+//! Control LED by the boot button via ETM without involving the CPU.
+
+//! The following wiring is assumed:
+//! - LED => GPIO1
 
 //% CHIPS: esp32c6 esp32h2
-//% FEATURES: embedded-hal-02
 
 #![no_std]
 #![no_main]
 
-use embedded_hal_02::digital::v2::OutputPin;
 use esp_backtrace as _;
 use esp_hal::{
     etm::Etm,
-    gpio::{etm::GpioEtmChannels, IO},
+    gpio::{
+        etm::{GpioEtmChannels, GpioEtmInputConfig, GpioEtmOutputConfig},
+        Io,
+        Level,
+        Pull,
+    },
     peripherals::Peripherals,
     prelude::*,
 };
@@ -19,16 +25,25 @@ use esp_hal::{
 fn main() -> ! {
     let peripherals = Peripherals::take();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let mut led = io.pins.gpio1.into_push_pull_output();
-    let button = io.pins.gpio9.into_pull_down_input();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut led = io.pins.gpio1;
+    let button = io.pins.gpio9;
 
-    led.set_high().unwrap();
+    led.set_high();
 
     // setup ETM
     let gpio_ext = GpioEtmChannels::new(peripherals.GPIO_SD);
-    let led_task = gpio_ext.channel0_task.toggle(&mut led);
-    let button_event = gpio_ext.channel0_event.falling_edge(button);
+    let led_task = gpio_ext.channel0_task.toggle(
+        &mut led,
+        GpioEtmOutputConfig {
+            open_drain: false,
+            pull: Pull::None,
+            initial_state: Level::Low,
+        },
+    );
+    let button_event = gpio_ext
+        .channel0_event
+        .falling_edge(button, GpioEtmInputConfig { pull: Pull::Down });
 
     let etm = Etm::new(peripherals.SOC_ETM);
     let channel0 = etm.channel0;

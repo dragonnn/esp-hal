@@ -48,6 +48,7 @@
 //! two different banks:
 //!   * `InterruptStatusRegisterAccessBank0`
 //!   * `InterruptStatusRegisterAccessBank1`.
+//!
 //! This trait provides functions to read the interrupt status and NMI status
 //! registers for both the `PRO CPU` and `APP CPU`. The implementation uses the
 //! `gpio` peripheral to access the appropriate registers.
@@ -59,21 +60,20 @@ use crate::{
         InterruptStatusRegisterAccess,
         InterruptStatusRegisterAccessBank0,
         InterruptStatusRegisterAccessBank1,
-        Unknown,
     },
     peripherals::GPIO,
 };
 
-pub const NUM_PINS: usize = 46;
+pub const NUM_PINS: usize = 47;
 
 pub(crate) const FUNC_IN_SEL_OFFSET: usize = 0;
 
-pub type OutputSignalType = u16;
-pub const OUTPUT_SIGNAL_MAX: u16 = 256;
-pub const INPUT_SIGNAL_MAX: u16 = 204;
+pub(crate) type OutputSignalType = u16;
+pub(crate) const OUTPUT_SIGNAL_MAX: u16 = 256;
+pub(crate) const INPUT_SIGNAL_MAX: u16 = 204;
 
-pub const ONE_INPUT: u8 = 0x38;
-pub const ZERO_INPUT: u8 = 0x3c;
+pub(crate) const ONE_INPUT: u8 = 0x38;
+pub(crate) const ZERO_INPUT: u8 = 0x3c;
 
 pub(crate) const GPIO_FUNCTION: AlternateFunction = AlternateFunction::Function1;
 
@@ -82,45 +82,162 @@ pub(crate) const fn get_io_mux_reg(gpio_num: u8) -> &'static crate::peripherals:
         let iomux = &*crate::peripherals::IO_MUX::PTR;
 
         match gpio_num {
-            0 => core::mem::transmute(iomux.gpio0()),
-            1 => core::mem::transmute(iomux.gpio1()),
-            2 => core::mem::transmute(iomux.gpio2()),
-            3 => core::mem::transmute(iomux.gpio3()),
-            4 => core::mem::transmute(iomux.gpio4()),
-            5 => core::mem::transmute(iomux.gpio5()),
-            6 => core::mem::transmute(iomux.gpio6()),
-            7 => core::mem::transmute(iomux.gpio7()),
-            8 => core::mem::transmute(iomux.gpio8()),
-            9 => core::mem::transmute(iomux.gpio9()),
-            10 => core::mem::transmute(iomux.gpio10()),
-            11 => core::mem::transmute(iomux.gpio11()),
-            12 => core::mem::transmute(iomux.gpio12()),
-            13 => core::mem::transmute(iomux.gpio13()),
-            14 => core::mem::transmute(iomux.gpio14()),
-            15 => core::mem::transmute(iomux.gpio15()),
-            16 => core::mem::transmute(iomux.gpio16()),
-            17 => core::mem::transmute(iomux.gpio17()),
-            18 => core::mem::transmute(iomux.gpio18()),
-            19 => core::mem::transmute(iomux.gpio19()),
-            20 => core::mem::transmute(iomux.gpio20()),
-            21 => core::mem::transmute(iomux.gpio21()),
-            26 => core::mem::transmute(iomux.gpio26()),
-            27 => core::mem::transmute(iomux.gpio27()),
-            32 => core::mem::transmute(iomux.gpio32()),
-            33 => core::mem::transmute(iomux.gpio33()),
-            34 => core::mem::transmute(iomux.gpio34()),
-            35 => core::mem::transmute(iomux.gpio35()),
-            36 => core::mem::transmute(iomux.gpio36()),
-            37 => core::mem::transmute(iomux.gpio37()),
-            38 => core::mem::transmute(iomux.gpio38()),
-            39 => core::mem::transmute(iomux.gpio39()),
-            40 => core::mem::transmute(iomux.gpio40()),
-            41 => core::mem::transmute(iomux.gpio41()),
-            42 => core::mem::transmute(iomux.gpio42()),
-            43 => core::mem::transmute(iomux.gpio43()),
-            44 => core::mem::transmute(iomux.gpio44()),
-            45 => core::mem::transmute(iomux.gpio45()),
-            46 => core::mem::transmute(iomux.gpio46()),
+            0 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO0,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio0()),
+            1 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO1,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio1()),
+            2 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO2,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio2()),
+            3 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO3,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio3()),
+            4 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO4,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio4()),
+            5 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO5,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio5()),
+            6 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO6,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio6()),
+            7 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO7,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio7()),
+            8 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO8,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio8()),
+            9 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO9,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio9()),
+            10 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO10,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio10()),
+            11 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO11,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio11()),
+            12 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO12,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio12()),
+            13 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO13,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio13()),
+            14 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO14,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio14()),
+            15 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO15,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio15()),
+            16 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO16,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio16()),
+            17 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO17,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio17()),
+            18 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO18,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio18()),
+            19 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO19,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio19()),
+            20 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO20,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio20()),
+            21 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO21,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio21()),
+            26 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO26,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio26()),
+            27 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO27,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio27()),
+            32 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO32,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio32()),
+            33 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO33,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio33()),
+            34 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO34,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio34()),
+            35 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO35,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio35()),
+            36 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO36,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio36()),
+            37 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO37,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio37()),
+            38 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO38,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio38()),
+            39 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO39,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio39()),
+            40 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO40,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio40()),
+            41 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO41,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio41()),
+            42 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO42,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio42()),
+            43 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO43,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio43()),
+            44 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO44,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio44()),
+            45 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO45,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio45()),
+            46 => core::mem::transmute::<
+                &'static crate::peripherals::io_mux::GPIO46,
+                &'static crate::peripherals::io_mux::GPIO0,
+            >(iomux.gpio46()),
             _ => ::core::unreachable!(),
         }
     }
@@ -136,6 +253,7 @@ pub(crate) fn gpio_intr_enable(int_enable: bool, nmi_enable: bool) -> u8 {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum InputSignal {
     SPIQ              = 0,
     SPID              = 1,
@@ -174,6 +292,9 @@ pub enum InputSignal {
     PCNT3_SIG_CH1     = 52,
     PCNT3_CTRL_CH0    = 53,
     PCNT3_CTRL_CH1    = 54,
+    USB_EXTPHY_VP     = 61,
+    USB_EXTPHY_VM     = 62,
+    USB_EXTPHY_RCV    = 63,
     USB_OTG_IDDIG     = 64,
     USB_OTG_AVALID    = 65,
     USB_SRP_BVALID    = 66,
@@ -218,6 +339,7 @@ pub enum InputSignal {
 /// Peripheral output signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum OutputSignal {
     SPIQ             = 0,
     SPID             = 1,
@@ -244,6 +366,9 @@ pub enum OutputSignal {
     I2CEXT0_SCL      = 29,
     I2CEXT0_SDA      = 30,
     SDIO_TOHOST_INT  = 31,
+    USB_EXTPHY_OEN   = 61,
+    USB_EXTPHY_VPO   = 63,
+    USB_EXTPHY_VMO   = 64,
     SPI3_CLK         = 72,
     SPI3_Q           = 73,
     SPI3_D           = 74,
@@ -380,8 +505,8 @@ crate::gpio::analog! {
     (14, 14,  touch_pad(14),   mux_sel,       fun_sel,       fun_ie,       rue,       rde)
     (15, 15,  xtal_32p_pad(),  x32p_mux_sel,  x32p_fun_sel,  x32p_fun_ie,  x32p_rue,  x32p_rde)
     (16, 16,  xtal_32n_pad(),  x32n_mux_sel,  x32n_fun_sel,  x32n_fun_ie,  x32n_rue,  x32n_rde)
-    (17, 17,  pad_dac1(),      pdac1_mux_sel, pdac1_fun_sel, pdac1_fun_ie, pdac1_rue, pdac1_rde)
-    (18, 18,  pad_dac2(),      pdac2_mux_sel, pdac2_fun_sel, pdac2_fun_ie, pdac2_rue, pdac2_rde)
+    (17, 17,  pad_dac1(),      mux_sel,       fun_sel,       fun_ie,       rue,       rde)
+    (18, 18,  pad_dac2(),      mux_sel,       fun_sel,       fun_ie,       rue,       rde)
     (19, 19,  rtc_pad19(),     mux_sel,       fun_sel,       fun_ie,       rue,       rde)
     (20, 20,  rtc_pad20(),     mux_sel,       fun_sel,       fun_ie,       rue,       rde)
     (21, 21,  rtc_pad21(),     mux_sel,       fun_sel,       fun_ie,       rue,       rde)
@@ -405,8 +530,8 @@ crate::gpio::rtc_pins! {
     (14, 14,  touch_pad(14),  "",     touch_pad14_hold, rue,       rde)
     (15, 15,  xtal_32p_pad(), x32p_,  x32p_hold,        x32p_rue,  x32p_rde)
     (16, 16,  xtal_32n_pad(), x32n_,  x32n_hold,        x32n_rue,  x32n_rde)
-    (17, 17,  pad_dac1(),     pdac1_, pdac1_hold,       pdac1_rue, pdac1_rde)
-    (18, 18,  pad_dac2(),     pdac2_, pdac2_hold,       pdac2_rue, pdac2_rde)
+    (17, 17,  pad_dac1(),     "",     pdac1_hold,       rue,       rde)
+    (18, 18,  pad_dac2(),     "",     pdac2_hold,       rue,       rde)
     (19, 19,  rtc_pad19(),    "",     pad19_hold,       rue,       rde)
     (20, 20,  rtc_pad20(),    "",     pad20_hold,       rue,       rde)
     (21, 21,  rtc_pad21(),    "",     pad21_hold,       rue,       rde)
@@ -433,5 +558,5 @@ impl InterruptStatusRegisterAccess for InterruptStatusRegisterAccessBank1 {
 }
 
 // implement marker traits on USB pins
-impl<T> crate::otg_fs::UsbDp for Gpio19<T> {}
-impl<T> crate::otg_fs::UsbDm for Gpio20<T> {}
+impl crate::otg_fs::UsbDm for Gpio19 {}
+impl crate::otg_fs::UsbDp for Gpio20 {}

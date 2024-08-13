@@ -1,20 +1,20 @@
 //! SPI write and read a flash chip
 //!
-//! Folowing pins are used:
-//! SCLK            GPIO0
-//! MISO/IO0        GPIO1
-//! MOSI/IO1        GPIO2
-//! IO2             GPIO3
-//! IO3             GPIO4
-//! CS              GPIO5
+//! The following wiring is assumed:
+//! - SCLK => GPIO0
+//! - MISO => GPIO1
+//! - MOSI => GPIO2
+//! - IO2  => GPIO3
+//! - IO3  => GPIO4
+//! - CS   => GPIO5
 //!
-//! Folowing pins are used for ESP32:
-//! SCLK            GPIO0
-//! MISO/IO0        GPIO2
-//! MOSI/IO1        GPIO4
-//! IO2             GPIO5
-//! IO3             GPIO13
-//! CS              GPIO14
+//! The following wiring is assumed for ESP32:
+//! - SCLK => GPIO0
+//! - MISO => GPIO2
+//! - MOSI => GPIO4
+//! - IO2  => GPIO5
+//! - IO3  => GPIO13
+//! - CS   => GPIO14
 //!
 //! Depending on your target and the board you are using you have to change the
 //! pins.
@@ -33,7 +33,7 @@ use esp_hal::{
     delay::Delay,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
     prelude::*,
     spi::{
@@ -41,16 +41,17 @@ use esp_hal::{
         SpiDataMode,
         SpiMode,
     },
+    system::SystemControl,
 };
 use esp_println::{print, println};
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32")] {
             let sclk = io.pins.gpio0;
@@ -75,7 +76,7 @@ fn main() -> ! {
     #[cfg(not(any(feature = "esp32", feature = "esp32s2")))]
     let dma_channel = dma.channel0;
 
-    let (tx_buffer, mut tx_descriptors, rx_buffer, mut rx_descriptors) = dma_buffers!(256, 320);
+    let (tx_buffer, tx_descriptors, rx_buffer, rx_descriptors) = dma_buffers!(256, 320);
 
     let mut spi = Spi::new_half_duplex(peripherals.SPI2, 100.kHz(), SpiMode::Mode0, &clocks)
         .with_pins(
@@ -86,12 +87,11 @@ fn main() -> ! {
             Some(sio3),
             Some(cs),
         )
-        .with_dma(dma_channel.configure(
-            false,
-            &mut tx_descriptors,
-            &mut rx_descriptors,
-            DmaPriority::Priority0,
-        ));
+        .with_dma(
+            dma_channel.configure(false, DmaPriority::Priority0),
+            tx_descriptors,
+            rx_descriptors,
+        );
 
     let delay = Delay::new(&clocks);
 

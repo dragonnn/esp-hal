@@ -1,6 +1,6 @@
 use super::{Ext0WakeupSource, Ext1WakeupSource, TimerWakeupSource, WakeSource, WakeTriggers};
 use crate::{
-    gpio::{RTCPin, RtcFunction},
+    gpio::{RtcFunction, RtcPin},
     rtc_cntl::{sleep::WakeupLevel, Clock, Rtc, RtcClock},
 };
 
@@ -40,7 +40,12 @@ pub const RTC_CNTL_CK8M_WAIT_DEFAULT: u8 = 20;
 pub const RTC_CK8M_ENABLE_WAIT_DEFAULT: u8 = 5;
 
 impl WakeSource for TimerWakeupSource {
-    fn apply(&self, rtc: &Rtc, triggers: &mut WakeTriggers, _sleep_config: &mut RtcSleepConfig) {
+    fn apply(
+        &self,
+        rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        _sleep_config: &mut RtcSleepConfig,
+    ) {
         triggers.set_timer(true);
         let rtc_cntl = unsafe { &*esp32::RTC_CNTL::ptr() };
         let clock_freq = RtcClock::get_slow_freq();
@@ -66,8 +71,13 @@ impl WakeSource for TimerWakeupSource {
     }
 }
 
-impl<P: RTCPin> WakeSource for Ext0WakeupSource<'_, P> {
-    fn apply(&self, _rtc: &Rtc, triggers: &mut WakeTriggers, sleep_config: &mut RtcSleepConfig) {
+impl<P: RtcPin> WakeSource for Ext0WakeupSource<'_, P> {
+    fn apply(
+        &self,
+        _rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        sleep_config: &mut RtcSleepConfig,
+    ) {
         // don't power down RTC peripherals
         sleep_config.set_rtc_peri_pd_en(false);
         triggers.set_ext0(true);
@@ -92,7 +102,7 @@ impl<P: RTCPin> WakeSource for Ext0WakeupSource<'_, P> {
     }
 }
 
-impl<P: RTCPin> Drop for Ext0WakeupSource<'_, P> {
+impl<P: RtcPin> Drop for Ext0WakeupSource<'_, P> {
     fn drop(&mut self) {
         // should we have saved the pin configuration first?
         // set pin back to IO_MUX (input_enable and func have no effect when pin is sent
@@ -104,7 +114,12 @@ impl<P: RTCPin> Drop for Ext0WakeupSource<'_, P> {
 }
 
 impl WakeSource for Ext1WakeupSource<'_, '_> {
-    fn apply(&self, _rtc: &Rtc, triggers: &mut WakeTriggers, sleep_config: &mut RtcSleepConfig) {
+    fn apply(
+        &self,
+        _rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        sleep_config: &mut RtcSleepConfig,
+    ) {
         // don't power down RTC peripherals
         sleep_config.set_rtc_peri_pd_en(false);
         triggers.set_ext1(true);
@@ -222,7 +237,7 @@ impl RtcSleepConfig {
         cfg
     }
 
-    pub(crate) fn base_settings(_rtc: &Rtc) {
+    pub(crate) fn base_settings(_rtc: &Rtc<'_>) {
         // settings derived from esp-idf after basic boot
         unsafe {
             let rtc_cntl = &*esp32::RTC_CNTL::ptr();

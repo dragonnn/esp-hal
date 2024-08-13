@@ -7,7 +7,6 @@ pub use self::implementation::*;
 #[cfg_attr(esp32c3, path = "esp32c3/mod.rs")]
 #[cfg_attr(esp32c6, path = "esp32c6/mod.rs")]
 #[cfg_attr(esp32h2, path = "esp32h2/mod.rs")]
-#[cfg_attr(esp32p4, path = "esp32p4/mod.rs")]
 #[cfg_attr(esp32s2, path = "esp32s2/mod.rs")]
 #[cfg_attr(esp32s3, path = "esp32s3/mod.rs")]
 mod implementation;
@@ -68,6 +67,24 @@ impl self::efuse::Efuse {
     }
 }
 
-pub fn is_valid_ram_address(address: u32) -> bool {
+#[allow(unused)]
+pub(crate) fn is_valid_ram_address(address: u32) -> bool {
     (self::constants::SOC_DRAM_LOW..=self::constants::SOC_DRAM_HIGH).contains(&address)
+}
+
+#[allow(unused)]
+pub(crate) fn is_valid_psram_address(address: u32) -> bool {
+    #[cfg(psram)]
+    {
+        let start = crate::psram::psram_vaddr_start() as u32;
+        let end = start + crate::psram::PSRAM_BYTES as u32;
+        (start..=end).contains(&address)
+    }
+    #[cfg(not(psram))]
+    false
+}
+
+#[allow(unused)]
+pub(crate) fn is_valid_memory_address(address: u32) -> bool {
+    is_valid_ram_address(address) || is_valid_psram_address(address)
 }

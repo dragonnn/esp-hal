@@ -12,7 +12,10 @@
 use core::ptr::addr_of_mut;
 
 use self::peripherals::{LPWR, TIMG0, TIMG1};
-use crate::{rtc_cntl::Rtc, timer::Wdt};
+use crate::{
+    rtc_cntl::{Rtc, SocResetReason},
+    timer::timg::Wdt,
+};
 
 pub mod efuse;
 pub mod gpio;
@@ -21,7 +24,18 @@ pub mod peripherals;
 pub mod psram;
 pub mod radio_clocks;
 pub mod trng;
+
 pub mod ulp_core;
+
+/// The name of the chip ("esp32s2") as `&str`
+#[macro_export]
+macro_rules! chip {
+    () => {
+        "esp32s2"
+    };
+}
+
+pub use chip;
 
 pub(crate) mod constants {
     pub const I2S_SCLK: u32 = 160_000_000;
@@ -32,6 +46,8 @@ pub(crate) mod constants {
 
     pub const SOC_DRAM_LOW: u32 = 0x3FFB_0000;
     pub const SOC_DRAM_HIGH: u32 = 0x4000_0000;
+
+    pub const REF_TICK: fugit::HertzU32 = fugit::HertzU32::MHz(1);
 }
 
 /// Function initializes ESP32 specific memories (RTC slow and fast) and
@@ -40,7 +56,6 @@ pub(crate) mod constants {
 /// ENTRY point is defined in memory.x
 /// *Note: the pre_init function is called in the original reset handler
 /// after the initializations done in this function*
-#[cfg(feature = "rt")]
 #[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn ESP32Reset() -> ! {
@@ -48,9 +63,13 @@ pub unsafe extern "C" fn ESP32Reset() -> ! {
     extern "C" {
         static mut _rtc_fast_bss_start: u32;
         static mut _rtc_fast_bss_end: u32;
+        static mut _rtc_fast_persistent_start: u32;
+        static mut _rtc_fast_persistent_end: u32;
 
         static mut _rtc_slow_bss_start: u32;
         static mut _rtc_slow_bss_end: u32;
+        static mut _rtc_slow_persistent_start: u32;
+        static mut _rtc_slow_persistent_end: u32;
 
         static mut _stack_start_cpu0: u32;
 
@@ -72,6 +91,19 @@ pub unsafe extern "C" fn ESP32Reset() -> ! {
         addr_of_mut!(_rtc_slow_bss_start),
         addr_of_mut!(_rtc_slow_bss_end),
     );
+    if matches!(
+        crate::reset::get_reset_reason(),
+        None | Some(SocResetReason::ChipPowerOn)
+    ) {
+        xtensa_lx_rt::zero_bss(
+            addr_of_mut!(_rtc_fast_persistent_start),
+            addr_of_mut!(_rtc_fast_persistent_end),
+        );
+        xtensa_lx_rt::zero_bss(
+            addr_of_mut!(_rtc_slow_persistent_start),
+            addr_of_mut!(_rtc_slow_persistent_end),
+        );
+    }
 
     unsafe {
         let stack_chk_guard = core::ptr::addr_of_mut!(__stack_chk_guard);
@@ -101,6 +133,6 @@ unsafe fn post_init() {
     let mut rtc = Rtc::new(LPWR::steal());
     rtc.rwdt.disable();
 
-    Wdt::<TIMG0>::set_wdt_enabled(false);
-    Wdt::<TIMG1>::set_wdt_enabled(false);
+    Wdt::<TIMG0, crate::Blocking>::set_wdt_enabled(false);
+    Wdt::<TIMG1, crate::Blocking>::set_wdt_enabled(false);
 }

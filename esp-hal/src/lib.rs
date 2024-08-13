@@ -2,30 +2,158 @@
     docsrs,
     doc = "<div style='padding:30px;background:#810;color:#fff;text-align:center;'><p>You might want to <a href='https://docs.esp-rs.org/esp-hal/'>browse the <code>esp-hal</code> documentation on the esp-rs website</a> instead.</p><p>The documentation here on <a href='https://docs.rs'>docs.rs</a> is built for a single chip only (ESP32-C6, in particular), while on the esp-rs website you can select your exact chip from the list of supported devices. Available peripherals and their APIs change depending on the chip.</p></div>\n\n<br/>\n\n"
 )]
-//! Bare-metal (`no_std`) HAL for Espressif devices. Implements most of the
-//! traits defined by various packages in the [embedded-hal] repository.
+//! # Bare-metal (`no_std`) HAL for all Espressif ESP32 devices.
 //!
-//! [embedded-hal]: https://github.com/rust-embedded/embedded-hal
+//! ## Overview
+//! The HAL implements both blocking _and_ async
+//! APIs for many peripherals. Where applicable, driver implement
+//! the [embedded-hal] and [embedded-hal-async] traits.
+//!
+//! This documentation is built for the
+#![cfg_attr(esp32, doc = "**ESP32**")]
+#![cfg_attr(esp32s2, doc = "**ESP32-S2**")]
+#![cfg_attr(esp32s3, doc = "**ESP32-S3**")]
+#![cfg_attr(esp32c2, doc = "**ESP32-C2**")]
+#![cfg_attr(esp32c3, doc = "**ESP32-C3**")]
+#![cfg_attr(esp32c6, doc = "**ESP32-C6**")]
+#![cfg_attr(esp32h2, doc = "**ESP32-H2**")]
+//! please ensure you are reading the correct [documentation] for your target
+//! device.
+//!
+//! ## Choosing a Device
+//!
+//! Depending on your target device, you need to enable the chip feature
+//! for that device. You may also need to do this on ancillary esp-hal crates.
+//!
+//! ## Examples
+//!
+//! We have a plethora of [examples] in the esp-hal repository. We use
+//! an [xtask] to automate the building, running, and testing of code and
+//! examples within esp-hal.
+//!
+//! Invoke the following command in the root of the esp-hal repository to get
+//! started:
+//!
+//! ```bash
+//! cargo xtask help
+//! ```
+//!
+//! ## Creating a Project
+//!
+//! We have a [book] that explains the full esp-rs ecosystem
+//! and how to get started, it's advisable to give that a read
+//! before proceeding. We also have a [training] that covers some common
+//! scenarios with examples.
+//!
+//! We have a template for quick starting bare-metal projects, [esp-template].
+//! The template uses [cargo-generate], so ensure that it is installed and run:
+//!
+//! ```bash
+//! cargo generate -a esp-rs/esp-template
+//! ```
+//!
+//! ## Commonly Used Setup
+//!
+//! Some minimal code to blink an LED looks like this:
+//!
+//! ```rust, no_run
+//! #![no_std]
+//! #![no_main]
+//!
+//! // A panic - handler e.g. `use esp_backtrace as _;`
+//!
+//! use esp_hal::{
+//!     clock::ClockControl,
+//!     delay::Delay,
+//!     gpio::{Io, Level, Output},
+//!     peripherals::Peripherals,
+//!     prelude::*,
+//!     system::SystemControl,
+//! };
+//! # #[panic_handler]
+//! # fn panic(_ : &core::panic::PanicInfo) -> ! {
+//! #     loop {}
+//! # }
+//!
+//! #[entry]
+//! fn main() -> ! {
+//!     let peripherals = Peripherals::take();
+//!     let system = SystemControl::new(peripherals.SYSTEM);
+//!     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
+//!
+//!     // Set GPIO0 as an output, and set its state high initially.
+//!     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//!     let mut led = Output::new(io.pins.gpio0, Level::High);
+//!
+//!     let delay = Delay::new(&clocks);
+//!
+//!     loop {
+//!         led.toggle();
+//!         delay.delay_millis(1000);
+//!     }
+//! }
+//! ```
+//!
+//! The steps here are:
+//! - Take all the peripherals from the PAC to pass them to the HAL drivers
+//!   later
+//! - Create [system::SystemControl]
+//! - Configure the system clocks - in this case use the boot defaults
+//! - Create [gpio::Io] which provides access to the GPIO pins
+//! - Create an [gpio::Output] pin driver which lets us control the logical
+//!   level of an output pin
+//! - Create a [delay::Delay] driver
+//! - In a loop, toggle the output pin's logical level with a delay of 1000 ms
+//!
+//! ## `PeripheralRef` Pattern
+//!
+//! Generally drivers take pins and peripherals as [peripheral::PeripheralRef].
+//! This means you can pass the pin/peripheral or a mutable reference to the
+//! pin/peripheral.
+//!
+//! The later can be used to regain access to the pin when the driver gets
+//! dropped. Then it's possible to reuse the pin/peripheral for a different
+//! purpose.
+//!
+//! ## Don't use [core::mem::forget]
+//!
+//! In general drivers are _NOT_ safe to use with [core::mem::forget]
+//!
+//! You should never use [core::mem::forget] on any type defined in the HAL.
+//!
+//! Some types heavily rely on their [Drop] implementation to not leave the
+//! hardware in undefined state and causing UB.
+//!
+//! You might want to consider using [`#[deny(clippy::mem_forget)`](https://rust-lang.github.io/rust-clippy/v0.0.212/index.html#mem_forget) in your project.
+//!
+//! [documentation]: https://docs.esp-rs.org/esp-hal
+//! [examples]: https://github.com/esp-rs/esp-hal/tree/main/examples
+//! [embedded-hal]: https://github.com/rust-embedded/embedded-hal/tree/master/embedded-hal
+//! [embedded-hal-async]: https://github.com/rust-embedded/embedded-hal/tree/master/embedded-hal-async
+//! [xtask]: https://github.com/matklad/cargo-xtask
+//! [esp-template]: https://github.com/esp-rs/esp-template
+//! [cargo-generate]: https://github.com/cargo-generate/cargo-generate
+//! [book]: https://docs.esp-rs.org/book/
+//! [training]: https://docs.esp-rs.org/no_std-training/
 //!
 //! ## Feature Flags
-#![doc = document_features::document_features!()]
+#![doc = document_features::document_features!(feature_label = r#"<span class="stab portability"><code>{feature}</code></span>"#)]
 #![doc(html_logo_url = "https://avatars.githubusercontent.com/u/46717278")]
 #![allow(asm_sub_register)]
 #![cfg_attr(feature = "async", allow(stable_features, async_fn_in_trait))]
 #![cfg_attr(xtensa, feature(asm_experimental_arch))]
+#![deny(rust_2018_idioms)]
 #![no_std]
 
 // MUST be the first module
 mod fmt;
 
-#[cfg(all(riscv, feature = "rt"))]
-pub use esp_riscv_rt::{self, entry};
-pub use procmacros as macros;
 #[cfg(riscv)]
-pub use riscv;
+pub use esp_riscv_rt::{self, entry, riscv};
+pub use procmacros as macros;
 #[cfg(xtensa)]
 pub use xtensa_lx;
-#[cfg(all(xtensa, feature = "rt"))]
+#[cfg(xtensa)]
 pub use xtensa_lx_rt::{self, entry};
 
 #[cfg(any(esp32, esp32s3))]
@@ -54,8 +182,6 @@ pub mod delay;
 pub mod dma;
 #[cfg(ecc)]
 pub mod ecc;
-#[cfg(feature = "embassy")]
-pub mod embassy;
 #[cfg(soc_etm)]
 pub mod etm;
 #[cfg(gpio)]
@@ -66,7 +192,7 @@ pub mod hmac;
 pub mod i2c;
 #[cfg(any(i2s0, i2s1))]
 pub mod i2s;
-#[cfg(all(any(dport, interrupt_core0, interrupt_core1), feature = "rt"))]
+#[cfg(any(dport, interrupt_core0, interrupt_core1))]
 pub mod interrupt;
 #[cfg(lcd_cam)]
 pub mod lcd_cam;
@@ -101,10 +227,11 @@ pub mod sha;
 pub mod spi;
 #[cfg(any(dport, hp_sys, pcr, system))]
 pub mod system;
-#[cfg(systimer)]
-pub mod systimer;
-#[cfg(any(timg0, timg1))]
+pub mod time;
+#[cfg(any(systimer, timg0, timg1))]
 pub mod timer;
+#[cfg(touch)]
+pub mod touch;
 #[cfg(trace0)]
 pub mod trace;
 #[cfg(any(twai0, twai1))]
@@ -115,7 +242,6 @@ pub mod uart;
 pub mod usb_serial_jtag;
 
 /// State of the CPU saved when entering exception or interrupt
-#[cfg(feature = "rt")]
 pub mod trapframe {
     #[cfg(riscv)]
     pub use esp_riscv_rt::TrapFrame;
@@ -172,6 +298,41 @@ impl crate::private::Sealed for Async {}
 
 pub(crate) mod private {
     pub trait Sealed {}
+
+    pub struct Internal;
+}
+
+/// Marker trait for types that can be safely used in `#[ram(persistent)]`.
+///
+/// # Safety
+///
+/// - The type must be inhabited
+/// - The type must be valid for any bit pattern of its backing memory in case a
+///   reset occurs during a write or a reset interrupts the zero initialization
+///   on first boot.
+/// - Structs must contain only `Persistable` fields and padding
+pub unsafe trait Persistable: Sized {}
+
+macro_rules! impl_persistable {
+    ($($t:ty),+) => {$(
+        unsafe impl Persistable for $t {}
+    )+};
+    (atomic $($t:ident),+) => {$(
+        unsafe impl Persistable for portable_atomic::$t {}
+    )+};
+}
+
+impl_persistable!(u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize, f32, f64);
+impl_persistable!(atomic AtomicU8, AtomicI8, AtomicU16, AtomicI16, AtomicU32, AtomicI32, AtomicUsize, AtomicIsize);
+
+unsafe impl<T: Persistable, const N: usize> Persistable for [T; N] {}
+
+#[doc(hidden)]
+pub mod __macro_implementation {
+    //! Unstable private implementation details of esp-hal-procmacros.
+
+    pub const fn assert_is_zeroable<T: bytemuck::Zeroable>() {}
+    pub const fn assert_is_persistable<T: super::Persistable>() {}
 }
 
 /// Available CPU cores
@@ -189,6 +350,7 @@ pub enum Cpu {
 }
 
 /// Which core the application is currently executing on
+#[inline(always)]
 pub fn get_core() -> Cpu {
     // This works for both RISCV and Xtensa because both
     // get_raw_core functions return zero, _or_ something
@@ -208,8 +370,15 @@ pub fn get_core() -> Cpu {
 ///
 /// Safety: This method should never return UNUSED_THREAD_ID_VALUE
 #[cfg(riscv)]
+#[inline(always)]
 fn get_raw_core() -> usize {
-    riscv::register::mhartid::read()
+    #[cfg(multi_core)]
+    {
+        riscv::register::mhartid::read()
+    }
+
+    #[cfg(not(multi_core))]
+    0
 }
 
 /// Returns the result of reading the PRID register logically ANDed with 0x2000,
@@ -220,6 +389,7 @@ fn get_raw_core() -> usize {
 ///
 /// Safety: This method should never return UNUSED_THREAD_ID_VALUE
 #[cfg(xtensa)]
+#[inline(always)]
 fn get_raw_core() -> usize {
     (xtensa_lx::get_processor_id() & 0x2000) as usize
 }
@@ -413,8 +583,8 @@ mod critical_section_impl {
 /// often a `const` variable.
 ///
 /// Example usage using [`spi::master::dma::SpiDma`]
-/// ```no_run
-/// const ARRAY_IN_FLASH = [0xAA; 128]
+/// ```rust, ignore
+/// const ARRAY_IN_FLASH = [0xAA; 128];
 ///
 /// let spi = SpiDma::new(/* */);
 ///
@@ -451,6 +621,26 @@ impl<T, const SIZE: usize> FlashSafeDma<T, SIZE> {
     }
 }
 
+/// Default (unhandled) interrupt handler
+pub const DEFAULT_INTERRUPT_HANDLER: interrupt::InterruptHandler = interrupt::InterruptHandler::new(
+    unsafe { core::mem::transmute::<*const (), extern "C" fn()>(EspDefaultHandler as *const ()) },
+    crate::interrupt::Priority::min(),
+);
+
+/// Trait implemented by drivers which allow the user to set an
+/// [interrupt::InterruptHandler]
+pub trait InterruptConfigurable: private::Sealed {
+    /// Set the interrupt handler
+    ///
+    /// Note that this will replace any previously registered interrupt handler.
+    /// Some peripherals offer a shared interrupt handler for multiple purposes.
+    /// It's the users duty to honor this.
+    ///
+    /// You can restore the default/unhandled interrupt handler by using
+    /// [DEFAULT_INTERRUPT_HANDLER]
+    fn set_interrupt_handler(&mut self, handler: interrupt::InterruptHandler);
+}
+
 #[cfg(riscv)]
 #[export_name = "hal_main"]
 fn hal_main(a0: usize, a1: usize, a2: usize) -> ! {
@@ -476,4 +666,24 @@ fn hal_main(a0: usize, a1: usize, a2: usize) -> ! {
 #[export_name = "__stack_chk_fail"]
 unsafe extern "C" fn stack_chk_fail() {
     panic!("Stack corruption detected");
+}
+
+#[doc(hidden)]
+/// Helper macro for checking doctest code snippets
+#[cfg(not(host_os = "windows"))]
+#[macro_export]
+macro_rules! before_snippet {
+    () => {
+        core::include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/doc-helper/before"))
+    };
+}
+
+#[doc(hidden)]
+/// Helper macro for checking doctest code snippets
+#[cfg(host_os = "windows")]
+#[macro_export]
+macro_rules! before_snippet {
+    () => {
+        core::include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "\\doc-helper\\before"))
+    };
 }

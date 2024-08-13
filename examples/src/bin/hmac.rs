@@ -64,7 +64,8 @@ use esp_hal::{
     peripherals::Peripherals,
     prelude::*,
     rng::Rng,
-    systimer::SystemTimer,
+    system::SystemControl,
+    timer::systimer::SystemTimer,
 };
 use esp_println::println;
 use hmac::{Hmac as HmacSw, Mac};
@@ -76,7 +77,7 @@ type HmacSha256 = HmacSw<Sha256>;
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let _clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let mut rng = Rng::new(peripherals.RNG);
@@ -88,7 +89,6 @@ fn main() -> ! {
 
     let mut src = [0_u8; 1024];
     rng.read(src.as_mut_slice());
-    // println!("HMAC input {:02X?}", src);
 
     let mut output = [0u8; 32];
 

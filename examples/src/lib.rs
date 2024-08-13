@@ -1,6 +1,5 @@
 #![no_std]
 
-#[cfg(not(feature = "esp32p4"))] // TODO: Remove me
 pub fn cycles() -> u64 {
     #[cfg(feature = "esp32")]
     {
@@ -9,6 +8,6 @@ pub fn cycles() -> u64 {
 
     #[cfg(not(feature = "esp32"))]
     {
-        esp_hal::systimer::SystemTimer::now()
+        esp_hal::timer::systimer::SystemTimer::now()
     }
 }

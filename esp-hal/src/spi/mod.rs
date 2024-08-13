@@ -1,5 +1,10 @@
-//! Serial Peripheral Interface
+//! Serial Peripheral Interface (SPI)
 //!
+//! ## Overview
+//! The Serial Peripheral Interface (SPI) is a synchronous serial interface
+//! useful for communication with external peripherals.
+//!
+//! ## Configuration
 //! This peripheral is capable of operating in either master or slave mode. For
 //! more information on these modes, please refer to the documentation in their
 //! respective modules.
@@ -7,7 +12,7 @@
 use crate::dma::DmaError;
 
 pub mod master;
-#[cfg(all(any(spi0, spi1, spi2, spi3), not(pdma)))]
+#[cfg(not(esp32))]
 pub mod slave;
 
 /// SPI errors
@@ -42,6 +47,14 @@ pub enum SpiMode {
     Mode1,
     Mode2,
     Mode3,
+}
+
+/// SPI Bit Order
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SpiBitOrder {
+    MSBFirst,
+    LSBFirst,
 }
 
 pub trait DuplexMode {}

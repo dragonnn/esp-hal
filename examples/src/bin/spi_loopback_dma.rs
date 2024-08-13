@@ -1,10 +1,10 @@
 //! SPI loopback test using DMA
 //!
-//! Folowing pins are used:
-//! SCLK    GPIO0
-//! MISO    GPIO2
-//! MOSI    GPIO4
-//! CS      GPIO5
+//! The following wiring is assumed:
+//! - SCLK => GPIO0
+//! - MISO => GPIO2
+//! - MOSI => GPIO4
+//! - CS   => GPIO5
 //!
 //! Depending on your target and the board you are using you have to change the
 //! pins.
@@ -24,23 +24,24 @@ use esp_hal::{
     delay::Delay,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
     prelude::*,
     spi::{
         master::{prelude::*, Spi},
         SpiMode,
     },
+    system::SystemControl,
 };
 use esp_println::println;
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let sclk = io.pins.gpio0;
     let miso = io.pins.gpio2;
     let mosi = io.pins.gpio4;
@@ -53,16 +54,15 @@ fn main() -> ! {
     #[cfg(not(any(feature = "esp32", feature = "esp32s2")))]
     let dma_channel = dma.channel0;
 
-    let (tx_buffer, mut tx_descriptors, rx_buffer, mut rx_descriptors) = dma_buffers!(32000);
+    let (tx_buffer, tx_descriptors, rx_buffer, rx_descriptors) = dma_buffers!(32000);
 
     let mut spi = Spi::new(peripherals.SPI2, 100.kHz(), SpiMode::Mode0, &clocks)
         .with_pins(Some(sclk), Some(mosi), Some(miso), Some(cs))
-        .with_dma(dma_channel.configure(
-            false,
-            &mut tx_descriptors,
-            &mut rx_descriptors,
-            DmaPriority::Priority0,
-        ));
+        .with_dma(
+            dma_channel.configure(false, DmaPriority::Priority0),
+            tx_descriptors,
+            rx_descriptors,
+        );
 
     let delay = Delay::new(&clocks);
 
@@ -80,7 +80,7 @@ fn main() -> ! {
         send[send.len() - 1] = i;
         i = i.wrapping_add(1);
 
-        let transfer = spi.dma_transfer(&mut send, &mut receive).unwrap();
+        let mut transfer = spi.dma_transfer(&mut send, &mut receive).unwrap();
         // here we could do something else while DMA transfer is in progress
         let mut n = 0;
         // Check is_done until the transfer is almost done (32000 bytes at 100kHz is

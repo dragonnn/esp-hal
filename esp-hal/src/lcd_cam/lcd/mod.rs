@@ -1,15 +1,22 @@
 //! LCD
 //!
-//! This module is capable of operating in either RGB (not yet implemented),
-//! MOTO6800 or I8080 mode. For more information on these modes, please refer
-//! to the documentation in their respective modules.
+//! ## Overview
+//! The LCD module is designed to send parallel video data signals, and its bus
+//! supports RGB, MOTO6800, and I8080 interface timing.
+//!
+//! For more information on these modes, please refer to the documentation in
+//! their respective modules.
+//!
+//! ## Implementation State
+//! - RGB is not supported yet
 
 use crate::{peripheral::PeripheralRef, peripherals::LCD_CAM};
 
 pub mod i8080;
 
-pub struct Lcd<'d> {
+pub struct Lcd<'d, DM: crate::Mode> {
     pub(crate) lcd_cam: PeripheralRef<'d, LCD_CAM>,
+    pub(crate) _mode: core::marker::PhantomData<DM>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

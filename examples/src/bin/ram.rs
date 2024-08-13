@@ -4,8 +4,8 @@
 //!
 //! Initialized memory is always re-initialized on startup.
 //!
-//! Uninitialzed memory isn't initialized on startup and can be used to keep
-//! data during resets.
+//! Persistent memory is not zeroed after resets that preserve RTC ram. See the
+//! documentation for `esp-hal-procmacros` for the full list.
 //!
 //! Zeroed memory is initialized to zero on startup.
 //!
@@ -24,14 +24,15 @@ use esp_hal::{
     peripherals::Peripherals,
     prelude::*,
     rtc_cntl::Rtc,
+    system::SystemControl,
 };
 use esp_println::println;
 
 #[ram(rtc_fast)]
 static mut SOME_INITED_DATA: [u8; 2] = [0xaa, 0xbb];
 
-#[ram(rtc_fast, uninitialized)]
-static mut SOME_UNINITED_DATA: [u8; 2] = [0; 2];
+#[ram(rtc_fast, persistent)]
+static mut SOME_PERSISTENT_DATA: [u8; 2] = [0; 2];
 
 #[ram(rtc_fast, zeroed)]
 static mut SOME_ZEROED_DATA: [u8; 8] = [0; 8];
@@ -39,7 +40,7 @@ static mut SOME_ZEROED_DATA: [u8; 8] = [0; 8];
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let delay = Delay::new(&clocks);
@@ -55,27 +56,22 @@ fn main() -> ! {
     );
     unsafe {
         println!("SOME_INITED_DATA {:x?}", SOME_INITED_DATA);
-        println!("SOME_UNINITED_DATA {:x?}", SOME_UNINITED_DATA);
+        println!("SOME_PERSISTENT_DATA {:x?}", SOME_PERSISTENT_DATA);
         println!("SOME_ZEROED_DATA {:x?}", SOME_ZEROED_DATA);
 
         SOME_INITED_DATA[0] = 0xff;
         SOME_ZEROED_DATA[0] = 0xff;
 
         println!("SOME_INITED_DATA {:x?}", SOME_INITED_DATA);
-        println!("SOME_UNINITED_DATA {:x?}", SOME_UNINITED_DATA);
+        println!("SOME_PERSISTENT_DATA {:x?}", SOME_PERSISTENT_DATA);
         println!("SOME_ZEROED_DATA {:x?}", SOME_ZEROED_DATA);
 
-        if SOME_UNINITED_DATA[0] != 0 {
-            SOME_UNINITED_DATA[0] = 0;
-            SOME_UNINITED_DATA[1] = 0;
+        if SOME_PERSISTENT_DATA[1] == 0xff {
+            SOME_PERSISTENT_DATA[1] = 0;
         }
 
-        if SOME_UNINITED_DATA[1] == 0xff {
-            SOME_UNINITED_DATA[1] = 0;
-        }
-
-        println!("Counter {}", SOME_UNINITED_DATA[1]);
-        SOME_UNINITED_DATA[1] += 1;
+        println!("Counter {}", SOME_PERSISTENT_DATA[1]);
+        SOME_PERSISTENT_DATA[1] += 1;
     }
 
     println!(

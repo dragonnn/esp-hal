@@ -1,55 +1,81 @@
 //! # Interrupt support
 //!
-//! Interrupt support functionality depends heavily on the features enabled.
+//! ## Overview
+//! This module routes one or more peripheral interrupt sources to any one
+//! of the CPU’s peripheral interrupts.
 //!
-//! When the `vectored` feature is enabled, the
-//! [`enable`] method will map interrupt to a CPU
-//! interrupt, and handle the `vector`ing to the peripheral interrupt, for
-//! example `UART0`.
+//! ## Configuration
+//! Usually peripheral drivers offer a mechanism to register your interrupt
+//! handler. e.g. the systimer offers `set_interrupt_handler` to register a
+//! handler for a specific alarm. Other drivers might take an interrupt handler
+//! as an optional parameter to their constructor.
 //!
-//! It is also possible, but not recommended, to bind an interrupt directly to a
+//! This is the preferred way to register handlers.
+//!
+//! There are additional ways to register interrupt handlers which are generally
+//! only meant to be used in very special situations (mostly internal to the HAL
+//! or the supporting libraries). Those are outside the scope of this
+//! documentation.
+//!
+//! It is even possible, but not recommended, to bind an interrupt directly to a
 //! CPU interrupt. This can offer lower latency, at the cost of more complexity
-//! in the interrupt handler.
+//! in the interrupt handler. See the `direct_vectoring.rs` example
 //!
-//! The `vectored` reserves a number of CPU interrupts, which cannot be used see
+//! We reserve a number of CPU interrupts, which cannot be used; see
 //! [`RESERVED_INTERRUPTS`].
 //!
-//! ## Example
-//! ```no_run
-//! #[entry]
-//! fn main() -> ! {
-//!     ...
-//!     critical_section::with(|cs| SWINT.borrow_ref_mut(cs).replace(sw_int));
+//! ## Examples
+//! ### Using the Peripheral Driver to Register an Interrupt Handler
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use core::cell::RefCell;
 //!
-//!     // enable the interrupt
-//!     interrupt::enable(
-//!         peripherals::Interrupt::FROM_CPU_INTR0,
-//!         interrupt::Priority::Priority1,
-//!     )
-//!     .unwrap();
+//! # use critical_section::Mutex;
+//! # use esp_hal::{
+//! #    prelude::*,
+//! #    system::{SoftwareInterrupt, SystemControl},
+//! # };
+//! # use esp_hal::interrupt::Priority;
+//! # use esp_hal::interrupt::InterruptHandler;
 //!
-//!     // trigger the interrupt
-//!     SWINT
-//!        .borrow_ref_mut(cs)
-//!        .as_mut()
-//!        .unwrap()
-//!        .raise(SoftwareInterrupt::SoftwareInterrupt0);
+//! static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> =
+//! Mutex::new(RefCell::new(None));
+//!
+//! let mut sw_int = system.software_interrupt_control;
+//!     critical_section::with(|cs| {
+//!         sw_int
+//!             .software_interrupt0
+//!             .set_interrupt_handler(swint0_handler);
+//!         SWINT0
+//!             .borrow_ref_mut(cs)
+//!             .replace(sw_int.software_interrupt0);
+//!     });
+//!
+//!     critical_section::with(|cs| {
+//!         SWINT0.borrow_ref(cs).as_ref().unwrap().raise();
+//!     });
 //!
 //!     loop {}
 //! }
 //!
-//! #[interrupt]
-//! fn FROM_CPU_INTR0() {
-//!     esp_println::println!("SW interrupt0");
+//! # use procmacros::handler;
+//! # use esp_hal::interrupt;
+//! # use critical_section::Mutex;
+//! # use core::cell::RefCell;
+//! # use esp_hal::system::SoftwareInterrupt;
+//! # static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> = Mutex::new(RefCell::new(None));
+//! #[handler(priority = esp_hal::interrupt::Priority::Priority1)]
+//! fn swint0_handler() {
+//!     // esp_println::println!("SW interrupt0");
 //!     critical_section::with(|cs| {
-//!         SWINT
-//!             .borrow_ref_mut(cs)
-//!             .as_mut()
-//!             .unwrap()
-//!             .reset(SoftwareInterrupt::SoftwareInterrupt0);
+//!         SWINT0.borrow_ref(cs).as_ref().unwrap().reset();
 //!     });
 //! }
 //! ```
+
+#![warn(missing_docs)]
+
+use core::ops::BitAnd;
 
 #[cfg(riscv)]
 pub use self::riscv::*;
@@ -62,6 +88,10 @@ mod riscv;
 mod xtensa;
 
 /// An interrupt handler
+#[cfg_attr(
+    multi_core,
+    doc = "**Note**: Interrupts are handled on the core they were setup on, if a driver is initialized on core 0, and moved to core 1, core 0 will still handle the interrupt."
+)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct InterruptHandler {
     f: extern "C" fn(),
@@ -69,22 +99,147 @@ pub struct InterruptHandler {
 }
 
 impl InterruptHandler {
+    /// Creates a new [InterruptHandler] which will call the given function at
+    /// the given priority.
     pub const fn new(f: extern "C" fn(), prio: Priority) -> Self {
         Self { f, prio }
     }
 
+    /// The function to be called
     #[inline]
     pub fn handler(&self) -> extern "C" fn() {
         self.f
     }
 
+    /// Priority to be used when registering the interrupt
     #[inline]
     pub fn priority(&self) -> Priority {
         self.prio
     }
 
+    /// Call the function
     #[inline]
     pub(crate) extern "C" fn call(&self) {
         (self.f)()
+    }
+}
+
+#[cfg(large_intr_status)]
+const STATUS_WORDS: usize = 3;
+
+#[cfg(very_large_intr_status)]
+const STATUS_WORDS: usize = 4;
+
+#[cfg(not(any(large_intr_status, very_large_intr_status)))]
+const STATUS_WORDS: usize = 2;
+
+/// Representation of peripheral-interrupt status bits.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct InterruptStatus {
+    status: [u32; STATUS_WORDS],
+}
+
+impl InterruptStatus {
+    const fn empty() -> Self {
+        InterruptStatus {
+            status: [0u32; STATUS_WORDS],
+        }
+    }
+
+    #[cfg(large_intr_status)]
+    const fn from(w0: u32, w1: u32, w2: u32) -> Self {
+        Self {
+            status: [w0, w1, w2],
+        }
+    }
+
+    #[cfg(very_large_intr_status)]
+    const fn from(w0: u32, w1: u32, w2: u32, w3: u32) -> Self {
+        Self {
+            status: [w0, w1, w2, w3],
+        }
+    }
+
+    #[cfg(not(any(large_intr_status, very_large_intr_status)))]
+    const fn from(w0: u32, w1: u32) -> Self {
+        Self { status: [w0, w1] }
+    }
+
+    /// Is the given interrupt bit set
+    pub fn is_set(&self, interrupt: u16) -> bool {
+        (self.status[interrupt as usize / 32] & (1 << (interrupt as u32 % 32))) != 0
+    }
+
+    /// Set the given interrupt status bit
+    pub fn set(&mut self, interrupt: u16) {
+        self.status[interrupt as usize / 32] |= 1 << (interrupt as u32 % 32);
+    }
+
+    /// Return an iterator over the set interrupt status bits
+    pub fn iterator(&self) -> InterruptStatusIterator {
+        InterruptStatusIterator {
+            status: *self,
+            idx: 0,
+        }
+    }
+}
+
+impl BitAnd for InterruptStatus {
+    type Output = InterruptStatus;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        #[cfg(large_intr_status)]
+        return Self::Output {
+            status: [
+                self.status[0] & rhs.status[0],
+                self.status[1] & rhs.status[1],
+                self.status[2] & rhs.status[2],
+            ],
+        };
+
+        #[cfg(very_large_intr_status)]
+        return Self::Output {
+            status: [
+                self.status[0] & rhs.status[0],
+                self.status[1] & rhs.status[1],
+                self.status[2] & rhs.status[2],
+                self.status[3] & rhs.status[3],
+            ],
+        };
+
+        #[cfg(not(any(large_intr_status, very_large_intr_status)))]
+        return Self::Output {
+            status: [
+                self.status[0] & rhs.status[0],
+                self.status[1] & rhs.status[1],
+            ],
+        };
+    }
+}
+
+/// Iterator over set interrupt status bits
+pub struct InterruptStatusIterator {
+    status: InterruptStatus,
+    idx: usize,
+}
+
+impl Iterator for InterruptStatusIterator {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx == usize::MAX {
+            return None;
+        }
+
+        for i in self.idx..STATUS_WORDS {
+            if self.status.status[i] != 0 {
+                let bit = self.status.status[i].trailing_zeros();
+                self.idx = i;
+                self.status.status[i] &= !1 << bit;
+                return Some((bit + 32 * i as u32) as u8);
+            }
+        }
+        self.idx = usize::MAX;
+        None
     }
 }

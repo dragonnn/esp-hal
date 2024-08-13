@@ -1,48 +1,52 @@
 //! # Control CPU Cores (ESP32)
 //!
 //! ## Overview
-//!
 //! This module provides essential functionality for controlling
 //! and managing the APP (second) CPU core on the `ESP32` chip. It is used to
 //! start and stop program execution on the APP core.
 //!
-//! ## Example
-//!
-//! ```no_run
+//! ## Examples
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::delay::Delay;
+//! # use esp_hal::cpu_control::{CpuControl, Stack};
+//! # use core::{cell::RefCell, ptr::addr_of_mut};
+//! # use critical_section::Mutex;
+//! # use esp_hal::prelude::*;
 //! static mut APP_CORE_STACK: Stack<8192> = Stack::new();
+//!
+//! # let delay = Delay::new(&clocks);
 //!
 //! let counter = Mutex::new(RefCell::new(0));
 //!
-//! let mut cpu_control = CpuControl::new(system.cpu_control);
+//! let mut cpu_control = CpuControl::new(peripherals.CPU_CTRL);
 //! let cpu1_fnctn = || {
-//!     cpu1_task(&mut timer1, &counter);
+//!     cpu1_task(&delay, &counter);
 //! };
 //! let _guard = cpu_control
-//!     .start_app_core(unsafe { &mut APP_CORE_STACK }, cpu1_fnctn)
-//!     .unwrap();
+//!    .start_app_core(unsafe { &mut *addr_of_mut!(APP_CORE_STACK) },
+//! cpu1_fnctn)     .unwrap();
 //!
 //! loop {
-//!     block!(timer0.wait()).unwrap();
-//!
+//!     delay.delay(1.secs());
 //!     let count = critical_section::with(|cs| *counter.borrow_ref(cs));
-//!     println!("Hello World - Core 0! Counter is {}", count);
 //! }
-//! ```
+//! # }
 //!
-//! Where `cpu1_task()` may be defined as:
-//!
-//! ```no_run
+//! // Where `cpu1_task()` may be defined as:
+//! # use esp_hal::delay::Delay;
+//! # use core::cell::RefCell;
+//! # use esp_hal::prelude::*;
 //! fn cpu1_task(
-//!     timer: &mut Timer<Timer0<TIMG1>>,
+//!     delay: &Delay,
 //!     counter: &critical_section::Mutex<RefCell<i32>>,
 //! ) -> ! {
-//!     println!("Hello World - Core 1!");
 //!     loop {
-//!         block!(timer.wait()).unwrap();
+//!         delay.delay(500.millis());
 //!
 //!         critical_section::with(|cs| {
-//!             let new_val = counter.borrow_ref_mut(cs).wrapping_add(1);
-//!             *counter.borrow_ref_mut(cs) = new_val;
+//!             let mut val = counter.borrow_ref_mut(cs);
+//!             *val = val.wrapping_add(1);
 //!         });
 //!     }
 //! }
@@ -53,7 +57,11 @@ use core::{
     mem::{ManuallyDrop, MaybeUninit},
 };
 
-use crate::Cpu;
+use crate::{
+    peripheral::{Peripheral, PeripheralRef},
+    peripherals::CPU_CTRL,
+    Cpu,
+};
 
 /// Data type for a properly aligned stack of N bytes
 // Xtensa ISA 10.5: [B]y default, the
@@ -72,6 +80,12 @@ use crate::Cpu;
 pub struct Stack<const SIZE: usize> {
     /// Memory to be used for the stack
     pub mem: MaybeUninit<[u8; SIZE]>,
+}
+
+impl<const SIZE: usize> Default for Stack<SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[allow(clippy::len_without_is_empty)]
@@ -125,8 +139,8 @@ pub enum Error {
 }
 
 /// Control CPU Cores
-pub struct CpuControl {
-    _cpu_control: crate::system::CpuControl,
+pub struct CpuControl<'d> {
+    _cpu_control: PeripheralRef<'d, CPU_CTRL>,
 }
 
 unsafe fn internal_park_core(core: Cpu) {
@@ -153,8 +167,10 @@ unsafe fn internal_park_core(core: Cpu) {
     }
 }
 
-impl CpuControl {
-    pub fn new(cpu_control: crate::system::CpuControl) -> CpuControl {
+impl<'d> CpuControl<'d> {
+    pub fn new(cpu_control: impl Peripheral<P = CPU_CTRL> + 'd) -> CpuControl<'d> {
+        crate::into_ref!(cpu_control);
+
         CpuControl {
             _cpu_control: cpu_control,
         }

@@ -1,18 +1,17 @@
 //! This shows how to transmit data continously via I2S.
 //!
-//! Pins used:
-//! BCLK    GPIO2
-//! WS      GPIO4
-//! DOUT    GPIO5
-//!
 //! Without an additional I2S sink device you can inspect the BCLK, WS
 //! and DOUT with a logic analyzer.
 //!
 //! You can also connect e.g. a PCM510x to hear an annoying loud sine tone (full
 //! scale), so turn down the volume before running this example.
 //!
-//! Wiring is like this:
+//! The following wiring is assumed:
+//! - BCLK => GPIO2
+//! - WS   => GPIO4
+//! - DOUT => GPIO5
 //!
+//! PCM510x:
 //! | Pin   | Connected to    |
 //! |-------|-----------------|
 //! | BCK   | GPIO1           |
@@ -27,11 +26,10 @@
 //! | XSMT  | +3V3            |
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use esp_backtrace as _;
@@ -39,12 +37,12 @@ use esp_hal::{
     clock::ClockControl,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    embassy::{self},
-    gpio::IO,
+    gpio::Io,
     i2s::{asynch::*, DataFormat, I2s, Standard},
     peripherals::Peripherals,
     prelude::*,
-    timer::TimerGroup,
+    system::SystemControl,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
 };
 use esp_println::println;
 
@@ -56,17 +54,30 @@ const SINE: [i16; 64] = [
     -28897, -27244, -25329, -23169, -20787, -18204, -15446, -12539, -9511, -6392, -3211,
 ];
 
-#[main]
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     println!("Init!");
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timg0);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timers = [OneShotTimer::new(timer0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let dma = Dma::new(peripherals.DMA);
     #[cfg(any(feature = "esp32", feature = "esp32s2"))]
@@ -74,19 +85,16 @@ async fn main(_spawner: Spawner) {
     #[cfg(not(any(feature = "esp32", feature = "esp32s2")))]
     let dma_channel = dma.channel0;
 
-    let (tx_buffer, mut tx_descriptors, _, mut rx_descriptors) = dma_buffers!(32000, 0);
+    let (tx_buffer, tx_descriptors, _, rx_descriptors) = dma_buffers!(32000, 0);
 
     let i2s = I2s::new(
         peripherals.I2S0,
         Standard::Philips,
         DataFormat::Data16Channel16,
         44100u32.Hz(),
-        dma_channel.configure_for_async(
-            false,
-            &mut tx_descriptors,
-            &mut rx_descriptors,
-            DmaPriority::Priority0,
-        ),
+        dma_channel.configure_for_async(false, DmaPriority::Priority0),
+        tx_descriptors,
+        rx_descriptors,
         &clocks,
     );
 

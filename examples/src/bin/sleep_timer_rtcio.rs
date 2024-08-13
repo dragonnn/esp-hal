@@ -1,5 +1,11 @@
-//! Demonstrates deep sleep with timer, using GPIO2 (low) and GPIO3 (high) as
+//! Demonstrates deep sleep with timer, using RTC pins as
 //! wakeup.
+//!
+//! The following wiring is assumed for ESP32C3:
+//! - RTC wakeup pin => GPIO2 (low level)
+//! - RTC wakeup pin => GPIO3 (high level)
+//! The following wiring is assumed for ESP32S3:
+//! - RTC wakeup pin => GPIO18 (low level)
 
 //% CHIPS: esp32c3 esp32s3
 
@@ -14,9 +20,8 @@ use esp_hal::{
     delay::Delay,
     entry,
     gpio,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
-    prelude::*,
     rtc_cntl::{
         get_reset_reason,
         get_wakeup_cause,
@@ -24,6 +29,7 @@ use esp_hal::{
         Rtc,
         SocResetReason,
     },
+    system::SystemControl,
     Cpu,
 };
 use esp_println::println;
@@ -31,10 +37,10 @@ use esp_println::println;
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let mut io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let mut rtc = Rtc::new(peripherals.LPWR);
 
     println!("up and runnning!");
@@ -43,21 +49,21 @@ fn main() -> ! {
     let wake_reason = get_wakeup_cause();
     println!("wake reason: {:?}", wake_reason);
 
-    let mut delay = Delay::new(&clocks);
+    let delay = Delay::new(&clocks);
     let timer = TimerWakeupSource::new(Duration::from_secs(10));
 
     #[cfg(feature = "esp32c3")]
-    let wakeup_pins: &mut [(&mut dyn gpio::RTCPinWithResistors, WakeupLevel)] = &mut [
+    let wakeup_pins: &mut [(&mut dyn gpio::RtcPinWithResistors, WakeupLevel)] = &mut [
         (&mut io.pins.gpio2, WakeupLevel::Low),
         (&mut io.pins.gpio3, WakeupLevel::High),
     ];
 
     #[cfg(feature = "esp32s3")]
-    let mut wakeup_pins: &mut [(&mut dyn gpio::RTCPin, WakeupLevel)] =
+    let wakeup_pins: &mut [(&mut dyn gpio::RtcPin, WakeupLevel)] =
         &mut [(&mut io.pins.gpio18, WakeupLevel::Low)];
 
     let rtcio = RtcioWakeupSource::new(wakeup_pins);
     println!("sleeping!");
     delay.delay_millis(100);
-    rtc.sleep_deep(&[&timer, &rtcio], &mut delay);
+    rtc.sleep_deep(&[&timer, &rtcio]);
 }

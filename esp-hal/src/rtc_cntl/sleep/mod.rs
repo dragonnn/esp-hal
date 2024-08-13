@@ -1,12 +1,6 @@
 //! # RTC Control Sleep Module
 //!
 //! ## Overview
-//!
-//! The `sleep` module in the `RTC CNTL (Real-Time Control)` driver
-//! provides functionality to manage sleep and wakeup sources for `ESP` chips.
-//! The `RTC_CNTL` is responsible for controlling the power and sleep behavior
-//! of the chip.
-//!
 //! The `sleep` module allows configuring various wakeup sources and setting up
 //! the sleep behavior based on those sources. The supported wakeup sources
 //! include:
@@ -25,9 +19,9 @@ use core::cell::RefCell;
 use core::time::Duration;
 
 #[cfg(any(esp32, esp32s3))]
-use crate::gpio::RTCPin as RtcIoWakeupPinType;
+use crate::gpio::RtcPin as RtcIoWakeupPinType;
 #[cfg(any(esp32c3, esp32c6))]
-use crate::gpio::RTCPinWithResistors as RtcIoWakeupPinType;
+use crate::gpio::RtcPinWithResistors as RtcIoWakeupPinType;
 use crate::rtc_cntl::Rtc;
 
 #[cfg_attr(esp32, path = "esp32.rs")]
@@ -131,6 +125,126 @@ impl<'a, 'b> RtcioWakeupSource<'a, 'b> {
     }
 }
 
+/// LP Core wakeup source
+///
+/// Wake up from LP core. This wakeup source
+/// can be used to wake up from both light and deep sleep.
+#[cfg(esp32c6)]
+pub struct WakeFromLpCoreWakeupSource {}
+
+#[cfg(esp32c6)]
+impl WakeFromLpCoreWakeupSource {
+    /// Create a new instance of `WakeFromLpCoreWakeupSource`
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[cfg(esp32c6)]
+impl Default for WakeFromLpCoreWakeupSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// GPIO wakeup source
+///
+/// Wake up from GPIO high or low level. Any pin can be used with this wake up
+/// source. Configure the pin for wake up via
+/// [crate::gpio::Input::wakeup_enable].
+///
+/// This wakeup source can be used to wake up from light sleep only.
+pub struct GpioWakeupSource {}
+
+impl GpioWakeupSource {
+    /// Create a new instance of [GpioWakeupSource]
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for GpioWakeupSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WakeSource for GpioWakeupSource {
+    fn apply(
+        &self,
+        _rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        _sleep_config: &mut RtcSleepConfig,
+    ) {
+        triggers.set_gpio(true);
+    }
+}
+
+macro_rules! uart_wakeup_impl {
+    ($num:literal) => {
+        paste::paste! {
+            #[doc = concat!("UART", $num, " wakeup source")]
+            ///
+            /// The chip can be woken up by reverting RXD for multiple cycles until the
+            /// number of rising edges is equal to or greater than the given value.
+            ///
+            /// Note that the character which triggers wakeup (and any characters before
+            /// it) will not be received by the UART after wakeup. This means that the
+            /// external device typically needs to send an extra character to trigger
+            /// wakeup before sending the data.
+            ///
+            /// After waking-up from UART, you should send some extra data through the UART
+            /// port in Active mode, so that the internal wakeup indication signal can be
+            /// cleared. Otherwise, the next UART wake-up would trigger with two less
+            /// rising edges than the configured threshold value.
+            ///
+            /// Wakeup from light sleep takes some time, so not every character sent to the
+            /// UART can be received by the application.
+            ///
+            /// This wakeup source can be used to wake up from light sleep only.
+            pub struct [< Uart $num WakeupSource >] {
+                threshold: u16,
+            }
+
+            impl [< Uart $num WakeupSource >] {
+                #[doc = concat!("Create a new instance of UART", $num, " wakeup source>") ]
+                ///
+                /// # Panics
+                ///
+                /// Panics if `threshold` is out of bounds.
+                pub fn new(threshold: u16) -> Self {
+                    if threshold > 1023 {
+                        panic!("Invalid threshold");
+                    }
+                    Self { threshold }
+                }
+            }
+
+            impl WakeSource for [< Uart $num WakeupSource >] {
+                fn apply(&self, _rtc: &Rtc<'_>, triggers: &mut WakeTriggers, _sleep_config: &mut RtcSleepConfig) {
+                    triggers.[< set_uart $num >](true);
+                    let uart = unsafe { crate::peripherals::[< UART $num >]::steal() };
+
+                    #[cfg(any(esp32, esp32s2, esp32s3, esp32c2, esp32c3))]
+                    uart.sleep_conf()
+                        .modify(|_, w| unsafe { w.active_threshold().bits(self.threshold) });
+
+                    #[cfg(not(any(esp32, esp32s2, esp32s3, esp32c2, esp32c3)))]
+                    uart.sleep_conf2().modify(|_, w| unsafe {
+                        w.wk_mode_sel()
+                            .bits(0)
+                            .active_threshold()
+                            .bits(self.threshold)
+                    });
+                }
+            }
+        }
+    };
+}
+
+uart_wakeup_impl!(0);
+uart_wakeup_impl!(1);
+
 #[cfg(not(pmu))]
 bitfield::bitfield! {
     #[derive(Default, Clone, Copy)]
@@ -193,5 +307,5 @@ bitfield::bitfield! {
 }
 
 pub trait WakeSource {
-    fn apply(&self, rtc: &Rtc, triggers: &mut WakeTriggers, sleep_config: &mut RtcSleepConfig);
+    fn apply(&self, rtc: &Rtc<'_>, triggers: &mut WakeTriggers, sleep_config: &mut RtcSleepConfig);
 }

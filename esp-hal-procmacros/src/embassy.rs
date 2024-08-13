@@ -22,8 +22,7 @@ pub(crate) mod main {
     use std::{cell::RefCell, fmt::Display, thread};
 
     use darling::{export::NestedMeta, FromMeta};
-    use proc_macro2::{Ident, Span, TokenStream};
-    use proc_macro_crate::{crate_name, FoundCrate};
+    use proc_macro2::TokenStream;
     use quote::{quote, ToTokens};
     use syn::{ReturnType, Type};
 
@@ -35,8 +34,7 @@ pub(crate) mod main {
         f: syn::ItemFn,
         main: TokenStream,
     ) -> Result<TokenStream, TokenStream> {
-        #[allow(unused_variables)]
-        let args = Args::from_list(args).map_err(|e| e.write_errors())?;
+        let _args = Args::from_list(args).map_err(|e| e.write_errors())?;
 
         let fargs = f.sig.inputs.clone();
 
@@ -133,12 +131,6 @@ pub(crate) mod main {
                 .push(syn::Error::new_spanned(obj.into_token_stream(), msg));
         }
 
-        /// Add one of Syn's parse errors.
-        #[allow(unused)]
-        pub fn syn_error(&self, err: syn::Error) {
-            self.errors.borrow_mut().as_mut().unwrap().push(err);
-        }
-
         /// Consume this object, producing a formatted error string if there are
         /// errors.
         pub fn check(self) -> Result<(), TokenStream> {
@@ -164,23 +156,10 @@ pub(crate) mod main {
     }
 
     pub fn main() -> TokenStream {
-        let hal_crate = if cfg!(any(feature = "is-lp-core", feature = "is-ulp-core")) {
-            crate_name("esp-lp-hal")
-        } else {
-            crate_name("esp-hal")
-        };
-
-        let executor = if let Ok(FoundCrate::Name(ref name)) = hal_crate {
-            let ident = Ident::new(&name, Span::call_site().into());
-            quote!( #ident::embassy::executor::Executor )
-        } else {
-            quote!(crate::embassy::executor::Executor)
-        };
-
         quote! {
-            #[entry]
+            #[esp_hal::entry]
             fn main() -> ! {
-                let mut executor = #executor::new();
+                let mut executor = ::esp_hal_embassy::Executor::new();
                 let executor = unsafe { __make_static(&mut executor) };
                 executor.run(|spawner| {
                     spawner.must_spawn(__embassy_main(spawner));

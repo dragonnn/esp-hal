@@ -13,8 +13,8 @@ use esp_hal::{
     delay::Delay,
     entry,
     peripherals::Peripherals,
-    prelude::*,
     rtc_cntl::{get_reset_reason, get_wakeup_cause, sleep::TimerWakeupSource, Rtc, SocResetReason},
+    system::SystemControl,
     Cpu,
 };
 use esp_println::println;
@@ -22,10 +22,10 @@ use esp_println::println;
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let mut delay = Delay::new(&clocks);
+    let delay = Delay::new(&clocks);
     let mut rtc = Rtc::new(peripherals.LPWR);
 
     println!("up and runnning!");
@@ -37,5 +37,5 @@ fn main() -> ! {
     let timer = TimerWakeupSource::new(Duration::from_secs(5));
     println!("sleeping!");
     delay.delay_millis(100);
-    rtc.sleep_deep(&[&timer], &mut delay);
+    rtc.sleep_deep(&[&timer]);
 }

@@ -1,20 +1,20 @@
 //! SPI read manufacturer id from flash chip
 //!
-//! Folowing pins are used:
-//! SCLK            GPIO0
-//! MISO/IO0        GPIO1
-//! MOSI/IO1        GPIO2
-//! IO2             GPIO3
-//! IO3             GPIO4
-//! CS              GPIO5
+//! The following wiring is assumed:
+//! - SCLK        =>  GPIO0
+//! - MISO/IO0    =>  GPIO1
+//! - MOSI/IO1    =>  GPIO2
+//! - IO2         =>  GPIO3
+//! - IO3         =>  GPIO4
+//! - CS          =>  GPIO5
 //!
-//! Folowing pins are used for ESP32:
-//! SCLK            GPIO0
-//! MISO/IO0        GPIO2
-//! MOSI/IO1        GPIO4
-//! IO2             GPIO5
-//! IO3             GPIO13
-//! CS              GPIO14
+//! The following wiring is assumed for ESP32:
+//! - SCLK        =>  GPIO0
+//! - MISO/IO0    =>  GPIO2
+//! - MOSI/IO1    =>  GPIO4
+//! - IO2         =>  GPIO5
+//! - IO3         =>  GPIO13
+//! - CS          =>  GPIO14
 //!
 //! Depending on your target and the board you are using you have to change the
 //! pins.
@@ -31,7 +31,7 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
     prelude::*,
     spi::{
@@ -39,16 +39,17 @@ use esp_hal::{
         SpiDataMode,
         SpiMode,
     },
+    system::SystemControl,
 };
 use esp_println::println;
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32")] {
             let sclk = io.pins.gpio0;

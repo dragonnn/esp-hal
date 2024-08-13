@@ -4,33 +4,33 @@
 //! `wdt.feed()` the watchdog will reset the system.
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: embedded-hal-02
 
 #![no_std]
 #![no_main]
 
-use embedded_hal_02::watchdog::{Watchdog, WatchdogEnable};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
     peripherals::Peripherals,
     prelude::*,
-    timer::TimerGroup,
+    system::SystemControl,
+    timer::timg::TimerGroup,
 };
 use esp_println::println;
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let delay = Delay::new(&clocks);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
     let mut wdt0 = timg0.wdt;
-    wdt0.start(2u64.secs());
+    wdt0.enable();
+    wdt0.set_timeout(2u64.secs());
 
     loop {
         wdt0.feed();

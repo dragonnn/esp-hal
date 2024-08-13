@@ -1,10 +1,10 @@
 //! SPI loopback test
 //!
-//! Folowing pins are used:
-//! SCLK    GPIO0
-//! MISO    GPIO2
-//! MOSI    GPIO4
-//! CS      GPIO5
+//! The following wiring is assumed:
+//! - SCLK => GPIO0
+//! - MISO => GPIO2
+//! - MOSI => GPIO4
+//! - CS   => GPIO5
 //!
 //! Depending on your target and the board you are using you have to change the
 //! pins.
@@ -14,34 +14,36 @@
 //! data.
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: embedded-hal-02
 
 #![no_std]
 #![no_main]
 
-use embedded_hal_02::blocking::spi::Transfer;
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    gpio::IO,
+    gpio::{any_pin::AnyPin, Io},
     peripherals::Peripherals,
     prelude::*,
     spi::{master::Spi, SpiMode},
+    system::SystemControl,
 };
 use esp_println::println;
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let sclk = io.pins.gpio0;
     let miso = io.pins.gpio2;
     let mosi = io.pins.gpio4;
     let cs = io.pins.gpio5;
+
+    let miso = AnyPin::new(miso);
+    let mosi = AnyPin::new(mosi);
 
     let mut spi = Spi::new(peripherals.SPI2, 100.kHz(), SpiMode::Mode0, &clocks).with_pins(
         Some(sclk),

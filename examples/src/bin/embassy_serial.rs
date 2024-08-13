@@ -3,31 +3,45 @@
 //! This is an example of running the embassy executor and asynchronously
 //! writing to and reading from uart
 
+//% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
+//% FEATURES: async embassy embassy-generic-timers
+
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
-
-//% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers
 
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
-    embassy,
+    gpio::Io,
     peripherals::{Peripherals, UART0},
-    prelude::*,
-    timer::TimerGroup,
-    uart::{config::AtCmdConfig, Uart, UartRx, UartTx},
+    system::SystemControl,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
+    uart::{
+        config::{AtCmdConfig, Config},
+        Uart,
+        UartRx,
+        UartTx,
+    },
     Async,
 };
-use static_cell::make_static;
+use static_cell::StaticCell;
 
 // rx_fifo_full_threshold
 const READ_BUF_SIZE: usize = 64;
 // EOT (CTRL-D)
 const AT_CMD: u8 = 0x04;
+
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
 
 #[embassy_executor::task]
 async fn writer(
@@ -73,24 +87,47 @@ async fn reader(
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timg0);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timers = [OneShotTimer::new(timer0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let mut uart0 = Uart::new_async(peripherals.UART0, &clocks);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+
+    // Default pins for Uart/Serial communication
+    #[cfg(feature = "esp32")]
+    let (tx_pin, rx_pin) = (io.pins.gpio1, io.pins.gpio3);
+    #[cfg(feature = "esp32c2")]
+    let (tx_pin, rx_pin) = (io.pins.gpio20, io.pins.gpio19);
+    #[cfg(feature = "esp32c3")]
+    let (tx_pin, rx_pin) = (io.pins.gpio21, io.pins.gpio20);
+    #[cfg(feature = "esp32c6")]
+    let (tx_pin, rx_pin) = (io.pins.gpio16, io.pins.gpio17);
+    #[cfg(feature = "esp32h2")]
+    let (tx_pin, rx_pin) = (io.pins.gpio24, io.pins.gpio23);
+    #[cfg(feature = "esp32s2")]
+    let (tx_pin, rx_pin) = (io.pins.gpio43, io.pins.gpio44);
+    #[cfg(feature = "esp32s3")]
+    let (tx_pin, rx_pin) = (io.pins.gpio43, io.pins.gpio44);
+
+    let config = Config::default().rx_fifo_full_threshold(READ_BUF_SIZE as u16);
+
+    let mut uart0 =
+        Uart::new_async_with_config(peripherals.UART0, config, &clocks, tx_pin, rx_pin).unwrap();
     uart0.set_at_cmd(AtCmdConfig::new(None, None, None, AT_CMD, None));
-    uart0
-        .set_rx_fifo_full_threshold(READ_BUF_SIZE as u16)
-        .unwrap();
+
     let (tx, rx) = uart0.split();
 
-    let signal = &*make_static!(Signal::new());
+    static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
+    let signal = &*SIGNAL.init(Signal::new());
 
     spawner.spawn(reader(rx, &signal)).ok();
     spawner.spawn(writer(tx, &signal)).ok();

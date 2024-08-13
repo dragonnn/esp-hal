@@ -5,6 +5,7 @@ use crate::{
     efuse::Efuse,
     gpio::{Pins, RtcFunction},
     peripherals::Peripherals,
+    private,
     rtc_cntl::{
         rtc::{
             rtc_clk_cpu_freq_set_xtal,
@@ -16,19 +17,31 @@ use crate::{
             RtcCalSel,
             SavedClockConfig,
         },
-        sleep::{Ext1WakeupSource, TimerWakeupSource, WakeSource, WakeTriggers, WakeupLevel},
+        sleep::{
+            Ext1WakeupSource,
+            TimerWakeupSource,
+            WakeFromLpCoreWakeupSource,
+            WakeSource,
+            WakeTriggers,
+            WakeupLevel,
+        },
         Rtc,
         RtcClock,
     },
 };
 
 impl WakeSource for TimerWakeupSource {
-    fn apply(&self, rtc: &Rtc, triggers: &mut WakeTriggers, _sleep_config: &mut RtcSleepConfig) {
+    fn apply(
+        &self,
+        rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        _sleep_config: &mut RtcSleepConfig,
+    ) {
         triggers.set_timer(true);
 
         let lp_timer = unsafe { &*esp32c6::LP_TIMER::ptr() };
         let clock_freq = RtcClock::get_slow_freq();
-        // TODO: maybe add sleep time adjustlemnt like idf
+        // TODO: maybe add sleep time adjustment like idf
         // TODO: maybe add check to prevent overflow?
         let clock_hz = clock_freq.frequency().to_Hz() as u64;
         let ticks = self.duration.as_micros() as u64 * clock_hz / 1_000_000u64;
@@ -60,30 +73,35 @@ impl Ext1WakeupSource<'_, '_> {
         unsafe { lp_aon().ext_wakeup_cntl().read().ext_wakeup_sel().bits() }
     }
 
-    fn wake_io_reset(gpio: &mut Pins) {
-        use crate::gpio::RTCPin;
+    fn wake_io_reset(pins: &mut Pins) {
+        use crate::gpio::RtcPin;
 
-        fn uninit_pin(pin: &mut impl RTCPin, wakeup_pins: u8) {
-            if wakeup_pins & (1 << pin.number()) != 0 {
+        fn uninit_pin(pin: &mut impl RtcPin, wakeup_pins: u8) {
+            if wakeup_pins & (1 << pin.number(private::Internal)) != 0 {
                 pin.rtcio_pad_hold(false);
                 pin.rtc_set_config(false, false, RtcFunction::Rtc);
             }
         }
 
         let wakeup_pins = Ext1WakeupSource::wakeup_pins();
-        uninit_pin(&mut gpio.gpio0, wakeup_pins);
-        uninit_pin(&mut gpio.gpio1, wakeup_pins);
-        uninit_pin(&mut gpio.gpio2, wakeup_pins);
-        uninit_pin(&mut gpio.gpio3, wakeup_pins);
-        uninit_pin(&mut gpio.gpio4, wakeup_pins);
-        uninit_pin(&mut gpio.gpio5, wakeup_pins);
-        uninit_pin(&mut gpio.gpio6, wakeup_pins);
-        uninit_pin(&mut gpio.gpio7, wakeup_pins);
+        uninit_pin(&mut pins.gpio0, wakeup_pins);
+        uninit_pin(&mut pins.gpio1, wakeup_pins);
+        uninit_pin(&mut pins.gpio2, wakeup_pins);
+        uninit_pin(&mut pins.gpio3, wakeup_pins);
+        uninit_pin(&mut pins.gpio4, wakeup_pins);
+        uninit_pin(&mut pins.gpio5, wakeup_pins);
+        uninit_pin(&mut pins.gpio6, wakeup_pins);
+        uninit_pin(&mut pins.gpio7, wakeup_pins);
     }
 }
 
 impl WakeSource for Ext1WakeupSource<'_, '_> {
-    fn apply(&self, _rtc: &Rtc, triggers: &mut WakeTriggers, _sleep_config: &mut RtcSleepConfig) {
+    fn apply(
+        &self,
+        _rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        _sleep_config: &mut RtcSleepConfig,
+    ) {
         // We don't have to keep the LP domain powered if we hold the wakeup pin states.
         triggers.set_ext1(true);
 
@@ -92,9 +110,9 @@ impl WakeSource for Ext1WakeupSource<'_, '_> {
         let mut pin_mask = 0u8;
         let mut level_mask = 0u8;
         for (pin, level) in pins.iter_mut() {
-            pin_mask |= 1 << pin.number();
+            pin_mask |= 1 << pin.number(private::Internal);
             level_mask |= match level {
-                WakeupLevel::High => 1 << pin.number(),
+                WakeupLevel::High => 1 << pin.number(private::Internal),
                 WakeupLevel::Low => 0,
             };
 
@@ -128,6 +146,17 @@ impl Drop for Ext1WakeupSource<'_, '_> {
         for (pin, _level) in pins.iter_mut() {
             pin.rtc_set_config(true, false, RtcFunction::Rtc);
         }
+    }
+}
+
+impl WakeSource for WakeFromLpCoreWakeupSource {
+    fn apply(
+        &self,
+        _rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        _sleep_config: &mut RtcSleepConfig,
+    ) {
+        triggers.set_lp_core(true);
     }
 }
 
@@ -714,21 +743,7 @@ impl Default for RtcSleepConfig {
 
         Self {
             deep: false,
-            pd_flags: {
-                let mut pd_flags = PowerDownFlags(0);
-
-                pd_flags.set_pd_lp_periph(true);
-                pd_flags.set_pd_cpu(true);
-                pd_flags.set_pd_xtal32k(true);
-                pd_flags.set_pd_rc32k(true);
-                pd_flags.set_pd_rc_fast(true);
-                pd_flags.set_pd_xtal(true);
-                pd_flags.set_pd_top(true);
-                pd_flags.set_pd_modem(true);
-                pd_flags.set_pd_vddsdio(true);
-
-                pd_flags
-            },
+            pd_flags: PowerDownFlags(0),
         }
     }
 }
@@ -823,14 +838,12 @@ impl RtcSleepConfig {
         }
     }
 
-    pub(crate) fn base_settings(_rtc: &Rtc) {
+    pub(crate) fn base_settings(_rtc: &Rtc<'_>) {
         Self::wake_io_reset();
     }
 
     fn wake_io_reset() {
         // loosely based on esp_deep_sleep_wakeup_io_reset
-
-        use crate::gpio::GpioExt;
 
         let peripherals = unsafe {
             // We're stealing peripherals to do some uninitialization after waking up from
@@ -838,9 +851,9 @@ impl RtcSleepConfig {
             // by deep sleep setup.
             Peripherals::steal()
         };
-        let mut gpio = peripherals.GPIO.split();
+        let mut pins = peripherals.GPIO.pins();
 
-        Ext1WakeupSource::wake_io_reset(&mut gpio);
+        Ext1WakeupSource::wake_io_reset(&mut pins);
     }
 
     /// Finalize power-down flags, apply configuration based on the flags.
@@ -855,6 +868,10 @@ impl RtcSleepConfig {
             self.pd_flags.set_pd_mem(true);
             self.pd_flags.set_pd_xtal(true);
             self.pd_flags.set_pd_hp_aon(true);
+            self.pd_flags.set_pd_lp_periph(true);
+            self.pd_flags.set_pd_xtal32k(true);
+            self.pd_flags.set_pd_rc32k(true);
+            self.pd_flags.set_pd_rc_fast(true);
         }
     }
 

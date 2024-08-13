@@ -7,16 +7,16 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::RefCell, ptr::addr_of_mut};
+use core::cell::RefCell;
 
 use critical_section::Mutex;
 use esp_backtrace as _;
 use esp_hal::{
     assist_debug::DebugAssist,
     clock::ClockControl,
-    interrupt::{self, Priority},
-    peripherals::{Interrupt, Peripherals},
+    peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
 };
 use esp_println::println;
 
@@ -25,13 +25,16 @@ static DA: Mutex<RefCell<Option<DebugAssist>>> = Mutex::new(RefCell::new(None));
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let _clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let mut da = DebugAssist::new(peripherals.ASSIST_DEBUG);
+    da.set_interrupt_handler(interrupt_handler);
 
     cfg_if::cfg_if! {
         if #[cfg(not(feature = "esp32s3"))] {
+            use core::ptr::addr_of_mut;
+
             extern "C" {
                 // top of stack
                 static mut _stack_start: u32;
@@ -68,8 +71,6 @@ fn main() -> ! {
 
     critical_section::with(|cs| DA.borrow_ref_mut(cs).replace(da));
 
-    interrupt::enable(Interrupt::ASSIST_DEBUG, Priority::Priority3).unwrap();
-
     eat_up_stack(0);
 
     loop {}
@@ -81,8 +82,8 @@ fn eat_up_stack(v: u32) {
     eat_up_stack(v + 1);
 }
 
-#[interrupt]
-fn ASSIST_DEBUG() {
+#[handler(priority = esp_hal::interrupt::Priority::min())]
+fn interrupt_handler() {
     critical_section::with(|cs| {
         println!("\n\nDEBUG_ASSIST interrupt");
         let mut da = DA.borrow_ref_mut(cs);

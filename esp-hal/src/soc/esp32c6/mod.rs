@@ -11,7 +11,7 @@
 //!    * I2S_SCLK: 160_000_000 - I2S clock frequency
 
 use self::peripherals::{LPWR, TIMG0, TIMG1};
-use crate::{rtc_cntl::Rtc, timer::Wdt};
+use crate::{rtc_cntl::Rtc, timer::timg::Wdt};
 
 pub mod efuse;
 pub mod gpio;
@@ -19,6 +19,16 @@ pub mod lp_core;
 pub mod peripherals;
 pub mod radio_clocks;
 pub mod trng;
+
+/// The name of the chip ("esp32c6") as `&str`
+#[macro_export]
+macro_rules! chip {
+    () => {
+        "esp32c6"
+    };
+}
+
+pub use chip;
 
 #[allow(unused)]
 pub(crate) mod registers {
@@ -40,6 +50,8 @@ pub(crate) mod constants {
 
     pub const SOC_DRAM_LOW: u32 = 0x4080_0000;
     pub const SOC_DRAM_HIGH: u32 = 0x4088_0000;
+
+    pub const RC_FAST_CLK: fugit::HertzU32 = fugit::HertzU32::kHz(17500);
 }
 
 #[export_name = "__post_init"]
@@ -49,6 +61,6 @@ unsafe fn post_init() {
     rtc.swd.disable();
     rtc.rwdt.disable();
 
-    Wdt::<TIMG0>::set_wdt_enabled(false);
-    Wdt::<TIMG1>::set_wdt_enabled(false);
+    Wdt::<TIMG0, crate::Blocking>::set_wdt_enabled(false);
+    Wdt::<TIMG1, crate::Blocking>::set_wdt_enabled(false);
 }

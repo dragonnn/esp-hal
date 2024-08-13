@@ -9,13 +9,16 @@
 //!
 //! This example should work with another ESP board running the `twai` example
 //! with `IS_SENDER` set to `true`.
+//!
+//! The following wiring is assumed:
+//! - TX => GPIO0
+//! - RX => GPIO2
 
 //% CHIPS: esp32c3 esp32c6 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
@@ -23,21 +26,33 @@ use embedded_can::{Frame, Id};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
-    embassy::{self},
-    gpio::IO,
+    gpio::Io,
     interrupt,
     peripherals::{self, Peripherals, TWAI0},
-    prelude::*,
-    timer::TimerGroup,
-    twai::{self, EspTwaiFrame, TwaiRx, TwaiTx},
+    system::SystemControl,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
+    twai::{self, EspTwaiFrame, TwaiMode, TwaiRx, TwaiTx},
 };
 use esp_println::println;
-use static_cell::make_static;
+use static_cell::StaticCell;
 
 type TwaiOutbox = Channel<NoopRawMutex, EspTwaiFrame, 16>;
 
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
 #[embassy_executor::task]
-async fn receiver(mut rx: TwaiRx<'static, TWAI0>, channel: &'static TwaiOutbox) -> ! {
+async fn receiver(
+    mut rx: TwaiRx<'static, TWAI0, esp_hal::Async>,
+    channel: &'static TwaiOutbox,
+) -> ! {
     loop {
         let frame = rx.receive_async().await;
 
@@ -57,7 +72,10 @@ async fn receiver(mut rx: TwaiRx<'static, TWAI0>, channel: &'static TwaiOutbox) 
 }
 
 #[embassy_executor::task]
-async fn transmitter(mut tx: TwaiTx<'static, TWAI0>, channel: &'static TwaiOutbox) -> ! {
+async fn transmitter(
+    mut tx: TwaiTx<'static, TWAI0, esp_hal::Async>,
+    channel: &'static TwaiOutbox,
+) -> ! {
     loop {
         let frame = channel.receive().await;
         let result = tx.transmit_async(&frame).await;
@@ -74,32 +92,37 @@ async fn transmitter(mut tx: TwaiTx<'static, TWAI0>, channel: &'static TwaiOutbo
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timg0);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timers = [OneShotTimer::new(timer0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    // Set the tx pin as open drain. Skip this if using transceivers.
-    let can_tx_pin = io.pins.gpio0.into_open_drain_output();
+    let can_tx_pin = io.pins.gpio0;
     let can_rx_pin = io.pins.gpio2;
 
     // The speed of the CAN bus.
     const CAN_BAUDRATE: twai::BaudRate = twai::BaudRate::B1000K;
 
+    // !!! Use `new_async` when using a transceiver. `new_async_no_transceiver` sets TX to open-drain
+
     // Begin configuring the TWAI peripheral. The peripheral is in a reset like
     // state that prevents transmission but allows configuration.
-    let mut can_config = twai::TwaiConfiguration::new(
+    let mut can_config = twai::TwaiConfiguration::new_async_no_transceiver(
         peripherals.TWAI0,
         can_tx_pin,
         can_rx_pin,
         &clocks,
         CAN_BAUDRATE,
+        TwaiMode::Normal,
     );
 
     // Partially filter the incoming messages to reduce overhead of receiving
@@ -126,7 +149,8 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    let channel = &*make_static!(Channel::new());
+    static CHANNEL: StaticCell<TwaiOutbox> = StaticCell::new();
+    let channel = &*CHANNEL.init(Channel::new());
 
     spawner.spawn(receiver(rx, channel)).ok();
     spawner.spawn(transmitter(tx, channel)).ok();

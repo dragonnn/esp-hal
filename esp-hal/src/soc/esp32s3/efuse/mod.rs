@@ -1,7 +1,6 @@
 //! # Reading of eFuses (ESP32-S3)
 //!
 //! ## Overview
-//!
 //! The `efuse` module provides functionality for reading eFuse data
 //! from the `ESP32-S3` chip, allowing access to various chip-specific
 //! information such as :
@@ -16,11 +15,18 @@
 //! The `Efuse` struct represents the eFuse peripheral and is responsible for
 //! reading various eFuse fields and values.
 //!
-//! ## Example
-//!
+//! ## Examples
 //! ### Read chip's MAC address from the eFuse storage.
-//! ```no_run
-//! let mac_address = Efuse::get_mac_address();
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::efuse::Efuse;
+//! # use esp_hal::gpio::Io;
+//! # use esp_hal::uart::Uart;
+//! # use core::writeln;
+//! # use core::fmt::Write;
+//! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//! # let mut serial_tx = Uart::new(peripherals.UART0, &clocks, io.pins.gpio4, io.pins.gpio5).unwrap();
+//! let mac_address = Efuse::read_base_mac_address();
 //! writeln!(
 //!     serial_tx,
 //!     "MAC: {:#X}:{:#X}:{:#X}:{:#X}:{:#X}:{:#X}",
@@ -31,6 +37,7 @@
 //!     mac_address[4],
 //!     mac_address[5]
 //! );
+//! # }
 //! ```
 
 pub use self::fields::*;

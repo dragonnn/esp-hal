@@ -3,30 +3,39 @@
 //! Most dev-kits use a USB-UART-bridge - in that case you won't see any output.
 
 //% CHIPS: esp32c3 esp32c6 esp32h2 esp32s3
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
-    embassy,
     peripherals::Peripherals,
-    prelude::*,
-    timer::TimerGroup,
+    system::SystemControl,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
     usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx},
+    Async,
 };
-use static_cell::make_static;
+use static_cell::StaticCell;
 
 const MAX_BUFFER_SIZE: usize = 512;
 
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
 #[embassy_executor::task]
 async fn writer(
-    mut tx: UsbSerialJtagTx<'static>,
+    mut tx: UsbSerialJtagTx<'static, Async>,
     signal: &'static Signal<NoopRawMutex, heapless::String<MAX_BUFFER_SIZE>>,
 ) {
     use core::fmt::Write;
@@ -46,7 +55,7 @@ async fn writer(
 
 #[embassy_executor::task]
 async fn reader(
-    mut rx: UsbSerialJtagRx<'static>,
+    mut rx: UsbSerialJtagRx<'static, Async>,
     signal: &'static Signal<NoopRawMutex, heapless::String<MAX_BUFFER_SIZE>>,
 ) {
     let mut rbuf = [0u8; MAX_BUFFER_SIZE];
@@ -63,18 +72,24 @@ async fn reader(
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> () {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    embassy::init(&clocks, TimerGroup::new(peripherals.TIMG0, &clocks));
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timers = [OneShotTimer::new(timer0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let (tx, rx) = UsbSerialJtag::new(peripherals.USB_DEVICE).split();
+    let (tx, rx) = UsbSerialJtag::new_async(peripherals.USB_DEVICE).split();
 
-    let signal = &*make_static!(Signal::new());
+    static SIGNAL: StaticCell<Signal<NoopRawMutex, heapless::String<MAX_BUFFER_SIZE>>> =
+        StaticCell::new();
+    let signal = &*SIGNAL.init(Signal::new());
 
     spawner.spawn(reader(rx, &signal)).unwrap();
     spawner.spawn(writer(tx, &signal)).unwrap();

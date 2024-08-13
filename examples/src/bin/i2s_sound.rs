@@ -1,18 +1,17 @@
 //! This shows how to transmit data continously via I2S.
 //!
-//! Pins used:
-//! BCLK    GPIO2
-//! WS      GPIO4
-//! DOUT    GPIO5
-//!
 //! Without an additional I2S sink device you can inspect the MCLK, BCLK, WS
 //!  andDOUT with a logic analyzer.
 //!
 //! You can also connect e.g. a PCM510x to hear an annoying loud sine tone (full
 //! scale), so turn down the volume before running this example.
 //!
-//! Wiring is like this:
+//! The following wiring is assumed:
+//! - BCLK => GPIO2
+//! - WS   => GPIO4
+//! - DOUT => GPIO5
 //!
+//! PCM510x:
 //! | Pin   | Connected to    |
 //! |-------|-----------------|
 //! | BCK   | GPIO0           |
@@ -36,10 +35,11 @@ use esp_hal::{
     clock::ClockControl,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    gpio::IO,
+    gpio::Io,
     i2s::{DataFormat, I2s, I2sWriteDma, Standard},
     peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
 };
 
 const SINE: [i16; 64] = [
@@ -53,10 +53,10 @@ const SINE: [i16; 64] = [
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let dma = Dma::new(peripherals.DMA);
     #[cfg(any(feature = "esp32", feature = "esp32s2"))]
@@ -64,19 +64,16 @@ fn main() -> ! {
     #[cfg(not(any(feature = "esp32", feature = "esp32s2")))]
     let dma_channel = dma.channel0;
 
-    let (tx_buffer, mut tx_descriptors, _, mut rx_descriptors) = dma_buffers!(32000, 0);
+    let (tx_buffer, tx_descriptors, _, rx_descriptors) = dma_buffers!(32000, 0);
 
     let i2s = I2s::new(
         peripherals.I2S0,
         Standard::Philips,
         DataFormat::Data16Channel16,
         44100.Hz(),
-        dma_channel.configure(
-            false,
-            &mut tx_descriptors,
-            &mut rx_descriptors,
-            DmaPriority::Priority0,
-        ),
+        dma_channel.configure(false, DmaPriority::Priority0),
+        tx_descriptors,
+        rx_descriptors,
         &clocks,
     );
 

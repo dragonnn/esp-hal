@@ -9,12 +9,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added new `Io::new_no_bind_interrupt` constructor (#1861)
+- Added touch pad support for esp32 (#1873)
+- Allow configuration of period updating method for MCPWM timers (#1898)
+- Add self-testing mode for TWAI peripheral. (#1929)
+
+### Changed
+
+- Peripheral driver constructors don't take `InterruptHandler`s anymore. Use `set_interrupt_handler` to explicitly set the interrupt handler now. (#1819)
+- Use the peripheral ref pattern for `OneShotTimer` and `PeriodicTimer` (#1855)
+
+- Allow DMA to/from psram for esp32s3 (#1827)
+- DMA buffers now don't require a static lifetime. Make sure to never `mem::forget` an in-progress DMA transfer (consider using `#[deny(clippy::mem_forget)]`) (#1837)
+
+### Fixed
+
+- Improve error detection in the I2C driver (#1847)
+- Fix I2S async-tx (#1833)
+- Fix PARL_IO async-rx (#1851)
+- SPI: Clear DMA interrupts before (not after) DMA starts (#1859)
+- SPI: disable and re-enable MISO and MOSI in `start_transfer_dma`, `start_read_bytes_dma` and `start_write_bytes_dma` accordingly (#1894)
+- TWAI: GPIO pins are not configured as input and output (#1906)
+
+### Removed
+
+- This package no longer re-exports the `esp_hal_procmacros::main` macro (#1828)
+- The `AesFlavour` trait no longer has the `ENCRYPT_MODE`/`DECRYPT_MODE` associated constants (#1849)
+
+## [0.19.0] - 2024-07-15
+
+### Added
+
+- uart: Added `with_cts`/`with_rts`s methods to configure CTS, and RTS pins (#1592)
+- uart: Constructors now require TX and RX pins (#1592)
+- uart: Added `Uart::new_with_default_pins` constructor (#1592)
+- uart: Added `UartTx` and `UartRx` constructors (#1592)
+- Add Flex / AnyFlex GPIO pin driver (#1659)
+- Add new `DmaError::UnsupportedMemoryRegion` - used memory regions are checked when preparing a transfer now (#1670)
+- Add DmaTransactionTxOwned, DmaTransactionRxOwned, DmaTransactionTxRxOwned, functions to do owning transfers added to SPI half-duplex (#1672)
+- uart: Implement `embedded_io::ReadReady` for `Uart` and `UartRx` (#1702)
+- ESP32-S3: Expose optional HSYNC input in LCD_CAM (#1707)
+- ESP32-S3: Add async support to the LCD_CAM I8080 driver (#1834)
+- ESP32-C6: Support lp-core as wake-up source (#1723)
+- Add support for GPIO wake-up source (#1724)
+- gpio: add DummyPin (#1769)
+- dma: add Mem2Mem to support memory to memory transfer (#1738)
+- Add `uart` wake source (#1727)
+- `#[ram(persistent)]` option to replace the unsound `uninitialized` option (#1677)
+- uart: Make `rx_timeout` optional in Config struct (#1759)
+- Add interrupt related functions to `PeriodicTimer`/`OneShotTimer`, added `ErasedTimer` (#1753)
+- Added blocking `read_bytes` method to `Uart` and `UartRx` (#1784)
+- Add method to expose `InputPin::is_interrupt_set` in `Input<InputPin>` for use in interrupt handlers (#1829)
+
+### Fixed
+
+- ESP32-S3: Fix DMA waiting check in LCD_CAM (#1707)
+- TIMG: Fix interrupt handler setup (#1714)
+- Fix `sleep_light` for ESP32-C6 (#1720)
+- ROM Functions: Fix address of `ets_update_cpu_frequency_rom` (#1722)
+- Fix `regi2c_*` functions for `esp32h2` (#1737)
+- Improved `#[ram(zeroed)]` soundness by adding a `bytemuck::Zeroable` type bound (#1677)
+- EESP32-S2 / ESP32-S3: Fix UsbDm and UsbDp for Gpio19 and Gpio20
+- Fix reading/writing small buffers via SPI master async dma (#1760)
+- Remove unnecessary delay in rtc_ctnl (#1794)
+
+### Changed
+
+- Refactor `Dac1`/`Dac2` drivers into a single `Dac` driver (#1661)
+- esp-hal-embassy: make executor code optional (but default) again
+- Improved interrupt latency on RISC-V based chips (#1679)
+- `esp_wifi::initialize` no longer requires running maximum CPU clock, instead check it runs above 80MHz. (#1688)
+- Move DMA descriptors from DMA Channel to each individual peripheral driver. (#1719)
+- Allow users to easily name DMA channels (#1770)
+- Support DMA chunk sizes other than the default 4092 (#1758)
+- Improved interrupt latency on Xtensa based chips (#1735)
+- Improve PCNT api (#1765)
+
+### Removed
+
+- uart: Removed `configure_pins` methods (#1592)
+- Removed `DmaError::Exhausted` error by improving the implementation of the `pop` function (#1664)
+- Unsound `#[ram(uninitialized)]` option in favor of the new `persistent` option (#1677)
+
+## [0.18.0] - 2024-06-04
+
+### Added
+
+- i2c: implement `I2C:transaction` for `embedded-hal` and `embedded-hal-async` (#1505)
+- spi: implement `with_bit_order` (#1537)
+- ESP32-PICO-V3-02: Initial support (#1155)
+- `time::current_time` API (#1503)
+- ESP32-S3: Add LCD_CAM Camera driver (#1483)
+- `embassy-usb` support (#1517)
+- SPI Slave support for ESP32-S2 (#1562)
+- Add new generic `OneShotTimer` and `PeriodicTimer` drivers, plus new `Timer` trait which is implemented for `TIMGx` and `SYSTIMER` (#1570)
+- Feature: correct `TRNG` mechanism #1804
+
+### Fixed
+
+- i2c: i2c1_handler used I2C0 register block by mistake (#1487)
+- Removed ESP32 specific code for resolutions > 16 bit in ledc embedded_hal::pwm max_duty_cycle function. (#1441)
+- Fixed division by zero in ledc embedded_hal::pwm set_duty_cycle function and converted to set_duty_hw instead of set_duty to eliminate loss of granularity. (#1441)
+- Embassy examples now build on stable (#1485)
+- Fix delay on esp32h2 (#1535)
+- spi: fix dma wrong mode when using eh1 blocking api (#1541)
+- uart: make `uart::UartRx::read_byte` public (#1547)
+- Fix async serial-usb-jtag (#1561)
+- Feeding `RWDT` now actually works (#1645)
+
+### Changed
+
+- Removed unneeded generic parameters on `Usb` (#1469)
+- Created virtual peripherals for CPU control and radio clocks, rather than splitting them from `SYSTEM` (#1428)
+- `IO`, `ADC`, `DAC`, `RTC*`, `LEDC`, `PWM` and `PCNT` drivers have been converted to camel case format (#1473)
+- RNG is no longer TRNG, the `CryptoRng` implementation has been removed. To track this being re-added see #1499 (#1498)
+- Make software interrupts shareable (#1500)
+- The `SystemParts` struct has been renamed to `SystemControl`, and now has a constructor which takes the `SYSTEM` peripheral (#1495)
+- Timer abstraction: refactor `systimer` and `timer` modules into a common `timer` module (#1527)
+- Removed the `embassy-executor-thread` and `embassy-executor-interrupt` features, they are now enabled by default when `embassy` is enabled. (#1485)
+- Software interrupt 3 is now used instead of software interrupt 0 on the thread aware executor on multicore systems (#1485)
+- Timer abstraction: refactor `systimer` and `timer` modules into a common `timer` module (#1527)
+- Refactoring of GPIO module, have drivers for Input,Output,OutputOpenDrain, all drivers setup their GPIOs correctly (#1542)
+- DMA transactions are now found in the `dma` module (#1550)
+- Remove unnecessary generics from PARL_IO driver (#1545)
+- Use `Level enum` in GPIO constructors instead of plain bools (#1574)
+- rmt: make ChannelCreator public (#1597)
+
+### Removed
+
+- Removed the `SystemExt` trait (#1495)
+- Removed the `GpioExt` trait (#1496)
+- Embassy support (and all related features) has been removed, now available in the `esp-hal-embassy` package instead (#1595)
+
+## [0.17.0] - 2024-04-18
+
+### Added
+
 - Add `ADC::read_blocking` to xtensa chips (#1293)
 - ESP32-C6 / ESP32-H2: Implement `ETM` for general purpose timers (#1274)
 - `interrupt::enable` now has a direct CPU enable counter part, `interrupt::enable_direct` (#1310)
 - `Delay::delay(time: fugit::MicrosDurationU64)`
 - Added async support for TWAI (#1320)
 - Add TWAI support for ESP32-C6 (#1323)
+- `GpioPin::steal` unsafe API (#1363)
+- Inherent implementions of GPIO pin `set_low`, `is_low`, etc.
+- Warn users when attempting to build using the `dev` profile (#1420)
+- Async uart now reports interrupt errors(overflow, glitch, frame error, parity) back to user of read/write. uart clock decimal part configured for c2,c3,s3 (#1168, #1445)
+- Add mechanism to configure UART source clock (#1416)
+- `GpioPin` got a function `set_state(bool)` (#1462)
+- Add definitions of external USB PHY peripheral I/O signals
+- Expose e-hal ErrorKind::NoAcknowledge in I2C driver (#1454)
+- Add remaining peripheral signals for LCD_CAM (#1466)
 
 ### Fixed
 
@@ -27,9 +172,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `LCD_CAM I8080` driver potentially sending garbage to display (#1301)
 - The TWAI driver can now be used without requiring the `embedded-hal` traits (#1355)
 - USB pullup/pulldown now gets properly cleared and does not interfere anymore on esp32c3 and esp32s3 (#1244)
+- Fixed GPIO counts so that using async code with the higher GPIO number should no longer panic (#1361, #1362)
+- ESP32/ESP32-S2: Wait for I2S getting out of TX_IDLE when starting a transfer (#1375)
+- Fixed writes to SPI not flushing before attempting to write, causing corrupted writes (#1381)
+- fix AdcConfig::adc_calibrate for xtensa targets (#1379)
+- Fixed a divide by zero panic when setting the LEDC duty cycle to 0 with `SetDutyCycle::set_duty_cycle` (#1403)
+- Support 192 and 256-bit keys for AES (#1316)
+- Fixed MCPWM DeadTimeCfg bit values (#1378)
+- ESP32 LEDC `set_duty_cycle` used HighSpeedChannel for LowSpeedChannel (#1457)
 
 ### Changed
 
+- TIMG: Allow use without the embedded-hal-02 traits in scope (#1367)
 - DMA: use channel clusters
 - Remove `Ext32` and `RateExtU64` from prelude
 - Prefer mutable references over moving for DMA transactions (#1238)
@@ -42,12 +196,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DMA channels can/have to be explicitly created for async or blocking drivers, added `set_interrupt_handler` to DMA channels, SPI, I2S, PARL_IO, don't enable interrupts on startup for DMA, I2S, PARL_IO, GPIO (#1300)
 - UART: Rework `change_baud` so it is possible to set baud rate even after instantiation (#1350)
 - Runtime ISR binding for SHA,ECC and RSA (#1354)
-- Update `pac`s with removed suffixes in `int` field names. Use `W1TC` for `int_clr`
+- Runtime ISR binding for I2C (#1376)
+- `UsbSerialJtag` can be created in async or blocking mode. The blocking constructor takes an optional interrupt handler argument (#1377)
+- SYSTIMER and TIMG instances can now be created in async or blocking mode (#1348)
+- Runtime ISR binding for TWAI (#1384)
+- ESP32-C6: The `gpio::lp_gpio` module has been renamed to `gpio::lp_io` to match the peripheral name (#1397)
+- Runtime ISR binding for assist_debug (#1395)
+- Runtime ISR binding for software interrupts, software interrupts are split now, interrupt-executor takes the software interrupt to use, interrupt-executor is easier to use (#1398)
+- PCNT: Runtime ISR binding (#1396)
+- Runtime ISR binding for RTC (#1405)
+- Improve MCPWM DeadTimeCfg API (#1378)
+- `SystemTimer`'s `Alarm` methods now require `&mut self` (#1455)
 
 ### Removed
 
 - Remove package-level type exports (#1275)
 - Removed `direct-vectoring` & `interrupt-preemption` features, as they are now enabled by default (#1310)
+- Removed the `rt` and `vectored` features (#1380)
+- Remove partial support for the ESP32-P4 (#1461)
 
 ## [0.16.1] - 2024-03-12
 
@@ -501,7 +667,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2022-08-05
 
-[Unreleased]: https://github.com/esp-rs/esp-hal/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/esp-rs/esp-hal/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/esp-rs/esp-hal/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/esp-rs/esp-hal/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/esp-rs/esp-hal/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/esp-rs/esp-hal/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/esp-rs/esp-hal/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/esp-rs/esp-hal/compare/v0.14.1...v0.15.0

@@ -4,6 +4,10 @@
 //! check `lp_core_i2c` example in the `esp-lp-hal`.
 //!
 //! Make sure to first compile the `esp-lp-hal/examples/i2c.rs` example
+//!
+//! The following wiring is assumed:
+//! - SDA => GPIO6
+//! - SCL => GPIO7
 
 //% CHIPS: esp32c6
 
@@ -12,7 +16,7 @@
 
 use esp_backtrace as _;
 use esp_hal::{
-    gpio::{lp_gpio::IntoLowPowerPin, IO},
+    gpio::{lp_io::LowPowerOutputOpenDrain, Io},
     i2c::lp_i2c::LpI2c,
     lp_core::{LpCore, LpCoreWakeupSource},
     peripherals::Peripherals,
@@ -24,10 +28,10 @@ use esp_println::println;
 fn main() -> ! {
     let peripherals = Peripherals::take();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let lp_sda = io.pins.gpio6.into_low_power().into_open_drain_output();
-    let lp_scl = io.pins.gpio7.into_low_power().into_open_drain_output();
+    let lp_sda = LowPowerOutputOpenDrain::new(io.pins.gpio6);
+    let lp_scl = LowPowerOutputOpenDrain::new(io.pins.gpio7);
 
     let lp_i2c = LpI2c::new(peripherals.LP_I2C0, lp_sda, lp_scl, 100.kHz());
 

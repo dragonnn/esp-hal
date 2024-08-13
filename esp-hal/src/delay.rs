@@ -1,26 +1,34 @@
-//! # Delay driver
+//! # Delay
 //!
 //! ## Overview
 //! The Delay driver provides blocking delay functionalities using the
 //! `SYSTIMER` peripheral for RISC-V devices and the built-in Xtensa timer for
-//! Xtensa devices. This module implements the blocking [DelayMs] and [DelayUs]
-//! traits from [embedded-hal].
+//! Xtensa devices.
 //!
+//! ## Configuration
 //! The delays are implemented in a "best-effort" way, meaning that the CPU will
 //! block for at least the amount of time specified, but accuracy can be
 //! affected by many factors, including interrupt usage.
 //!
-//! ## Example
-//! ```no_run
-//! let mut clocks = ClockControl::boot_defaults(system.clock_control).freeze();
+//! ## Usage
+//! This module implements the blocking [DelayMs] and [DelayUs] traits from
+//! [embedded-hal], both 0.2.x and 1.x.x.
+//!
+//! ## Examples
+//! ### Delay for 1 second
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::delay::Delay;
+//! # use embedded_hal::delay::DelayNs;
 //! let mut delay = Delay::new(&clocks);
 //!
 //! delay.delay_ms(1000 as u32);
+//! # }
 //! ```
-//!
+//! 
 //! [DelayMs]: embedded_hal_02::blocking::delay::DelayMs
 //! [DelayUs]: embedded_hal_02::blocking::delay::DelayUs
-//! [embedded-hal]: https://docs.rs/embedded-hal/0.2.7/embedded_hal/index.html
+//! [embedded-hal]: https://docs.rs/embedded-hal/1.0.0/embedded_hal/delay/index.html
 
 use fugit::HertzU64;
 pub use fugit::MicrosDurationU64;
@@ -75,16 +83,20 @@ impl embedded_hal::delay::DelayNs for Delay {
 #[cfg(riscv)]
 mod implementation {
     use super::*;
-    use crate::{clock::Clocks, systimer::SystemTimer};
+    use crate::{clock::Clocks, timer::systimer::SystemTimer};
 
     impl Delay {
         /// Create a new `Delay` instance
-        pub fn new(clocks: &Clocks) -> Self {
+        pub fn new(clocks: &Clocks<'_>) -> Self {
             // The counters and comparators are driven using `XTAL_CLK`.
             // The average clock frequency is fXTAL_CLK/2.5, which is 16 MHz.
             // The timer counting is incremented by 1/16 μs on each `CNT_CLK` cycle.
             Self {
+                #[cfg(not(esp32h2))]
                 freq: HertzU64::MHz(clocks.xtal_clock.to_MHz() as u64 * 10 / 25),
+                #[cfg(esp32h2)]
+                // esp32h2 TRM, section 11.2 Clock Source Selection
+                freq: HertzU64::MHz(clocks.xtal_clock.to_MHz() as u64 * 10 / 20),
             }
         }
 
@@ -122,7 +134,7 @@ mod implementation {
 
     impl Delay {
         /// Create a new `Delay` instance
-        pub fn new(clocks: &Clocks) -> Self {
+        pub fn new(clocks: &Clocks<'_>) -> Self {
             Self {
                 freq: clocks.cpu_clock.into(),
             }

@@ -1,27 +1,18 @@
-//! The prelude
+//! # The `esp-hal` Prelude
 //!
-//! Re-exports all traits required for interacting with the various peripheral
-//! drivers implemented in this crate.
+//! ## Overview
+//! The prelude is the list of things that `esp-hal` automatically imports into
+//! every program. It’s kept as small as possible, and is focused on
+//! things, particularly traits, which are used in almost every single Rust
+//! program.
 
-pub use embedded_dma::{
-    ReadBuffer as _embedded_dma_ReadBuffer,
-    ReadTarget as _embedded_dma_ReadTarget,
-    Word as _embedded_dma_Word,
-    WriteBuffer as _embedded_dma_WriteBuffer,
-    WriteTarget as _embedded_dma_WriteTarget,
-};
 pub use fugit::{ExtU64 as _fugit_ExtU64, RateExtU32 as _fugit_RateExtU32};
 pub use nb;
 
+#[cfg(dac)]
+pub use crate::analog::dac::Instance as _esp_hal_analog_dac_Instance;
 #[cfg(any(dport, pcr, system))]
 pub use crate::clock::Clock as _esp_hal_clock_Clock;
-#[cfg(any(gdma, pdma))]
-pub use crate::dma::{
-    DmaTransfer as _esp_hal_dma_DmaTransfer,
-    DmaTransferRxTx as _esp_hal_dma_DmaTransferRxTx,
-};
-#[cfg(feature = "rt")]
-pub use crate::entry;
 #[cfg(gpio)]
 pub use crate::gpio::{
     InputPin as _esp_hal_gpio_InputPin,
@@ -38,13 +29,13 @@ pub use crate::ledc::{
     },
     timer::{TimerHW as _esp_hal_ledc_timer_TimerHW, TimerIFace as _esp_hal_ledc_timer_TimerIFace},
 };
-pub use crate::macros::*;
-#[cfg(any(dport, pcr, system))]
-pub use crate::system::SystemExt as _esp_hal_system_SystemExt;
 #[cfg(any(timg0, timg1))]
-pub use crate::timer::{
-    Instance as _esp_hal_timer_Instance,
-    TimerGroupInstance as _esp_hal_timer_TimerGroupInstance,
+pub use crate::timer::timg::{
+    Instance as _esp_hal_timer_timg_Instance,
+    TimerGroupInstance as _esp_hal_timer_timg_TimerGroupInstance,
 };
+#[cfg(any(systimer, timg0, timg1))]
+pub use crate::timer::Timer as _esp_hal_timer_Timer;
 #[cfg(any(uart0, uart1, uart2))]
-pub use crate::uart::{Instance as _esp_hal_uart_Instance, UartPins as _esp_hal_uart_UartPins};
+pub use crate::uart::Instance as _esp_hal_uart_Instance;
+pub use crate::{entry, macros::*, InterruptConfigurable};

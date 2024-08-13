@@ -7,6 +7,17 @@
 //! crate functionality to circle through the HSV hue color space (with
 //! saturation and value both at 255). Additionally, we apply a gamma correction
 //! and limit the brightness to 10 (out of 255).
+//!
+//! The following wiring is assumed for ESP32:
+//! - LED => GPIO33
+//! The following wiring is assumed for ESP32C3:
+//! - LED => GPIO8
+//! The following wiring is assumed for ESP32C6, ESP32H2:
+//! - LED => GPIO8
+//! The following wiring is assumed for ESP32S2:
+//! - LED => GPIO18
+//! The following wiring is assumed for ESP32S3:
+//! - LED => GPIO48
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
 
@@ -17,10 +28,11 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
     prelude::*,
     rmt::Rmt,
+    system::SystemControl,
 };
 use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
 use smart_leds::{
@@ -33,10 +45,10 @@ use smart_leds::{
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     // Each devkit uses a unique GPIO for the RGB LED, so in order to support
     // all chips we must unfortunately use `#[cfg]`s:
@@ -56,17 +68,15 @@ fn main() -> ! {
 
     // Configure RMT peripheral globally
     #[cfg(not(feature = "esp32h2"))]
-    let rmt = Rmt::new(peripherals.RMT, 80.MHz(), &clocks, None).unwrap();
+    let rmt = Rmt::new(peripherals.RMT, 80.MHz(), &clocks).unwrap();
     #[cfg(feature = "esp32h2")]
-    let rmt = Rmt::new(peripherals.RMT, 32.MHz(), &clocks, None).unwrap();
+    let rmt = Rmt::new(peripherals.RMT, 32.MHz(), &clocks).unwrap();
 
     // We use one of the RMT channels to instantiate a `SmartLedsAdapter` which can
     // be used directly with all `smart_led` implementations
     let rmt_buffer = smartLedBuffer!(1);
     let mut led = SmartLedsAdapter::new(rmt.channel0, led_pin, rmt_buffer, &clocks);
 
-    // Initialize the Delay peripheral, and use it to toggle the LED state in a
-    // loop.
     let delay = Delay::new(&clocks);
 
     let mut color = Hsv {

@@ -1,4 +1,4 @@
-//! # MD5 Message-Digest Algorithm
+//! # MD5 Message-Digest Algorithm (MD5)
 //!
 //! ## ⚠️ Security Warning ⚠️
 //!
@@ -24,25 +24,42 @@
 //! all of them. Usage of this module may help make program binaries smaller
 //! than it would be if you included an MD5 implementation in your project.
 //!
-//! ## Example
-//!
-//! To compute a full digest from a single buffer, use the following:
-//!
-//! ```
+//! ## Examples
+//! ## Compute a Full Digest From a Single Buffer
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::rom::md5;
+//! # use esp_hal::uart::Uart;
+//! # use esp_hal::gpio::Io;
+//! # use core::writeln;
+//! # use core::fmt::Write;
+//! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//! # let mut uart0 = Uart::new(peripherals.UART0, &clocks, io.pins.gpio1, io.pins.gpio2).unwrap();
+//! # let data = "Dummy";
 //! let d: md5::Digest = md5::compute(&data);
 //! writeln!(uart0, "{}", d);
+//! # }
 //! ```
-//!
-//! To compute a digest over multiple buffers:
-//!
-//! ```
+//! ## Compute a Digest Over Multiple Buffers
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::rom::md5;
+//! # use esp_hal::uart::Uart;
+//! # use esp_hal::gpio::Io;
+//! # use core::writeln;
+//! # use core::fmt::Write;
+//! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//! # let mut uart0 = Uart::new(peripherals.UART0, &clocks, io.pins.gpio1, io.pins.gpio2).unwrap();
+//! # let data0 = "Dummy";
+//! # let data1 = "Dummy";
 //! let mut ctx = md5::Context::new();
 //! ctx.consume(&data0);
 //! ctx.consume(&data1);
 //! let d: md5::Digest = ctx.compute();
 //! writeln!(uart0, "{}", d);
+//! # }
 //! ```
-//!
+//! 
 //! [1]: <https://crates.io/crates/md5>
 
 #[allow(unused)]

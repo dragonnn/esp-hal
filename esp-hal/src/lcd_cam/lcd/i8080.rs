@@ -6,10 +6,30 @@
 //! efficient data transfer.
 //!
 //! ## Examples
+//! ### MIPI-DSI Display
 //! Following code show how to send a command to a MIPI-DSI display over I8080
 //! protocol.
 //!
-//! ```no_run
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::gpio::Io;
+//! # use esp_hal::lcd_cam::{LcdCam, lcd::i8080::{Config, I8080, TxEightBits}};
+//! # use esp_hal::dma_buffers;
+//! # use esp_hal::dma::{Dma, DmaPriority};
+//! # use fugit::RateExtU32;
+//!
+//! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//!
+//! # let dma = Dma::new(peripherals.DMA);
+//! # let channel = dma.channel0;
+//!
+//! # let (tx_buffer, tx_descriptors, _, rx_descriptors) = dma_buffers!(32678, 0);
+//!
+//! # let channel = channel.configure(
+//! #     false,
+//! #     DmaPriority::Priority0,
+//! # );
+//!
 //! let tx_pins = TxEightBits::new(
 //!     io.pins.gpio9,
 //!     io.pins.gpio46,
@@ -25,6 +45,7 @@
 //! let mut i8080 = I8080::new(
 //!     lcd_cam.lcd,
 //!     channel.tx,
+//!     tx_descriptors,
 //!     tx_pins,
 //!     20.MHz(),
 //!     Config::default(),
@@ -33,24 +54,28 @@
 //! .with_ctrl_pins(io.pins.gpio0, io.pins.gpio47);
 //!
 //! i8080.send(0x3A, 0, &[0x55]).unwrap(); // RGB565
+//! # }
 //! ```
 
-use core::{fmt::Formatter, mem::size_of};
+use core::{fmt::Formatter, marker::PhantomData, mem::size_of};
 
-use embedded_dma::ReadBuffer;
 use fugit::HertzU32;
 
+#[cfg(feature = "async")]
+use crate::lcd_cam::asynch::LcdDoneFuture;
 use crate::{
     clock::Clocks,
     dma::{
+        dma_private::{DmaSupport, DmaSupportTx},
         ChannelTx,
-        ChannelTypes,
+        DescriptorChain,
+        DmaChannel,
+        DmaDescriptor,
         DmaError,
         DmaPeripheral,
+        DmaTransferTx,
         LcdCamPeripheral,
-        RegisterAccess,
-        Tx,
-        TxChannel,
+        ReadBuffer,
         TxPrivate,
     },
     gpio::{OutputPin, OutputSignal},
@@ -63,28 +88,30 @@ use crate::{
     },
     peripheral::{Peripheral, PeripheralRef},
     peripherals::LCD_CAM,
+    Mode,
 };
 
-pub struct I8080<'d, TX, P> {
+pub struct I8080<'d, CH: DmaChannel, P, DM: Mode> {
     lcd_cam: PeripheralRef<'d, LCD_CAM>,
-    tx_channel: TX,
+    tx_channel: ChannelTx<'d, CH>,
+    tx_chain: DescriptorChain,
     _pins: P,
+    _phantom: PhantomData<DM>,
 }
 
-impl<'d, T, R, P: TxPins> I8080<'d, ChannelTx<'d, T, R>, P>
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> I8080<'d, CH, P, DM>
 where
-    T: TxChannel<R>,
-    R: ChannelTypes + RegisterAccess,
-    R::P: LcdCamPeripheral,
+    CH::P: LcdCamPeripheral,
     P::Word: Into<u16>,
 {
     pub fn new(
-        lcd: Lcd<'d>,
-        mut channel: ChannelTx<'d, T, R>,
+        lcd: Lcd<'d, DM>,
+        mut channel: ChannelTx<'d, CH>,
+        descriptors: &'static mut [DmaDescriptor],
         mut pins: P,
         frequency: HertzU32,
         config: Config,
-        clocks: &Clocks,
+        clocks: &Clocks<'d>,
     ) -> Self {
         let is_2byte_mode = size_of::<P::Word>() == 2;
 
@@ -103,23 +130,23 @@ where
             ],
         );
 
-        lcd_cam.lcd_clock().write(|w| {
+        lcd_cam.lcd_clock().write(|w| unsafe {
             // Force enable the clock for all configuration registers.
             w.clk_en()
                 .set_bit()
                 .lcd_clk_sel()
-                .variant((i + 1) as _)
+                .bits((i + 1) as _)
                 .lcd_clkm_div_num()
-                .variant(divider.div_num as _)
+                .bits(divider.div_num as _)
                 .lcd_clkm_div_b()
-                .variant(divider.div_b as _)
+                .bits(divider.div_b as _)
                 .lcd_clkm_div_a()
-                .variant(divider.div_a as _)
+                .bits(divider.div_a as _)
                 // LCD_PCLK = LCD_CLK / 2
                 .lcd_clk_equ_sysclk()
                 .clear_bit()
                 .lcd_clkcnt_n()
-                .variant(2 - 1) // Must not be 0.
+                .bits(2 - 1) // Must not be 0.
                 .lcd_ck_idle_edge()
                 .bit(config.clock_mode.polarity == Polarity::IdleHigh)
                 .lcd_ck_out_edge()
@@ -143,18 +170,18 @@ where
                 .lcd_2byte_en()
                 .bit(is_2byte_mode)
         });
-        lcd_cam.lcd_misc().write(|w| {
+        lcd_cam.lcd_misc().write(|w| unsafe {
             // Set the threshold for Async Tx FIFO full event. (5 bits)
             w.lcd_afifo_threshold_num()
-                .variant(0)
+                .bits(0)
                 // Configure the setup cycles in LCD non-RGB mode. Setup cycles
                 // expected = this value + 1. (6 bit)
                 .lcd_vfk_cyclelen()
-                .variant(config.setup_cycles.saturating_sub(1) as _)
+                .bits(config.setup_cycles.saturating_sub(1) as _)
                 // Configure the hold time cycles in LCD non-RGB mode. Hold
                 // cycles expected = this value + 1.
                 .lcd_vbk_cyclelen()
-                .variant(config.hold_cycles.saturating_sub(1) as _)
+                .bits(config.hold_cycles.saturating_sub(1) as _)
                 // 1: Send the next frame data when the current frame is sent out.
                 // 0: LCD stops when the current frame is sent out.
                 .lcd_next_frame_en()
@@ -180,40 +207,40 @@ where
         });
         lcd_cam
             .lcd_dly_mode()
-            .write(|w| w.lcd_cd_mode().variant(config.cd_mode as u8));
-        lcd_cam.lcd_data_dout_mode().write(|w| {
+            .write(|w| unsafe { w.lcd_cd_mode().bits(config.cd_mode as u8) });
+        lcd_cam.lcd_data_dout_mode().write(|w| unsafe {
             w.dout0_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout1_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout2_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout3_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout4_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout5_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout6_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout7_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout8_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout9_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout10_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout11_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout12_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout13_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout14_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
                 .dout15_mode()
-                .variant(config.output_bit_mode as u8)
+                .bits(config.output_bit_mode as u8)
         });
 
         lcd_cam.lcd_user().modify(|_, w| w.lcd_update().set_bit());
@@ -224,12 +251,39 @@ where
         Self {
             lcd_cam,
             tx_channel: channel,
+            tx_chain: DescriptorChain::new(descriptors),
             _pins: pins,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<'d, TX: Tx, P: TxPins> I8080<'d, TX, P>
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> DmaSupport for I8080<'d, CH, P, DM> {
+    fn peripheral_wait_dma(&mut self, _is_tx: bool, _is_rx: bool) {
+        let lcd_user = self.lcd_cam.lcd_user();
+        // Wait until LCD_START is cleared by hardware.
+        while lcd_user.read().lcd_start().bit_is_set() {}
+        self.tear_down_send();
+    }
+
+    fn peripheral_dma_stop(&mut self) {
+        unreachable!("unsupported")
+    }
+}
+
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> DmaSupportTx for I8080<'d, CH, P, DM> {
+    type TX = ChannelTx<'d, CH>;
+
+    fn tx(&mut self) -> &mut Self::TX {
+        &mut self.tx_channel
+    }
+
+    fn chain(&mut self) -> &mut DescriptorChain {
+        &mut self.tx_chain
+    }
+}
+
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> I8080<'d, CH, P, DM>
 where
     P::Word: Into<u16>,
 {
@@ -254,8 +308,8 @@ where
 
     pub fn with_cs<CS: OutputPin>(self, cs: impl Peripheral<P = CS> + 'd) -> Self {
         crate::into_ref!(cs);
-        cs.set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_CS);
+        cs.set_to_push_pull_output(crate::private::Internal);
+        cs.connect_peripheral_to_output(OutputSignal::LCD_CS, crate::private::Internal);
 
         self
     }
@@ -268,11 +322,11 @@ where
         crate::into_ref!(dc);
         crate::into_ref!(wrx);
 
-        dc.set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DC);
+        dc.set_to_push_pull_output(crate::private::Internal);
+        dc.connect_peripheral_to_output(OutputSignal::LCD_DC, crate::private::Internal);
 
-        wrx.set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_PCLK);
+        wrx.set_to_push_pull_output(crate::private::Internal);
+        wrx.connect_peripheral_to_output(OutputSignal::LCD_PCLK, crate::private::Internal);
 
         self
     }
@@ -287,9 +341,9 @@ where
         self.start_write_bytes_dma(data.as_ptr() as _, core::mem::size_of_val(data))?;
         self.start_send();
 
-        let dma_int_raw = self.lcd_cam.lc_dma_int_raw();
-        // Wait until LCD_TRANS_DONE is set.
-        while dma_int_raw.read().lcd_trans_done_int_raw().bit_is_clear() {}
+        let lcd_user = self.lcd_cam.lcd_user();
+        // Wait until LCD_START is cleared by hardware.
+        while lcd_user.read().lcd_start().bit_is_set() {}
 
         self.tear_down_send();
 
@@ -301,23 +355,49 @@ where
         cmd: impl Into<Command<P::Word>>,
         dummy: u8,
         data: &'t TXBUF,
-    ) -> Result<Transfer<'t, 'd, TX, P>, DmaError>
+    ) -> Result<DmaTransferTx<'_, Self>, DmaError>
     where
-        TXBUF: ReadBuffer<Word = P::Word>,
+        TXBUF: ReadBuffer,
     {
         let (ptr, len) = unsafe { data.read_buffer() };
 
         self.setup_send(cmd.into(), dummy);
-        self.start_write_bytes_dma(ptr as _, len * size_of::<P::Word>())?;
+        self.start_write_bytes_dma(ptr as _, len)?;
         self.start_send();
 
-        Ok(Transfer {
-            instance: Some(self),
-        })
+        Ok(DmaTransferTx::new(self))
     }
 }
 
-impl<'d, TX: Tx, P> I8080<'d, TX, P> {
+#[cfg(feature = "async")]
+impl<'d, CH: DmaChannel, P: TxPins> I8080<'d, CH, P, crate::Async>
+where
+    P::Word: Into<u16>,
+{
+    pub async fn send_dma_async<'t, TXBUF>(
+        &'t mut self,
+        cmd: impl Into<Command<P::Word>>,
+        dummy: u8,
+        data: &'t TXBUF,
+    ) -> Result<(), DmaError>
+    where
+        TXBUF: ReadBuffer,
+    {
+        let (ptr, len) = unsafe { data.read_buffer() };
+
+        self.setup_send(cmd.into(), dummy);
+        self.start_write_bytes_dma(ptr as _, len)?;
+        self.start_send();
+
+        LcdDoneFuture::new().await;
+        if self.tx_channel.has_error() {
+            return Err(DmaError::DescriptorError);
+        }
+        Ok(())
+    }
+}
+
+impl<'d, CH: DmaChannel, P, DM: Mode> I8080<'d, CH, P, DM> {
     fn setup_send<T: Copy + Into<u16>>(&mut self, cmd: Command<T>, dummy: u8) {
         // Reset LCD control unit and Async Tx FIFO
         self.lcd_cam
@@ -340,7 +420,7 @@ impl<'d, TX: Tx, P> I8080<'d, TX, P> {
                     .modify(|_, w| w.lcd_cmd().set_bit().lcd_cmd_2_cycle_en().clear_bit());
                 self.lcd_cam
                     .lcd_cmd_val()
-                    .write(|w| w.lcd_cmd_value().variant(value.into() as _));
+                    .write(|w| unsafe { w.lcd_cmd_value().bits(value.into() as _) });
             }
             Command::Two(first, second) => {
                 self.lcd_cam
@@ -349,19 +429,19 @@ impl<'d, TX: Tx, P> I8080<'d, TX, P> {
                 let cmd = first.into() as u32 | (second.into() as u32) << 16;
                 self.lcd_cam
                     .lcd_cmd_val()
-                    .write(|w| w.lcd_cmd_value().variant(cmd));
+                    .write(|w| unsafe { w.lcd_cmd_value().bits(cmd) });
             }
         }
 
         // Set dummy length
-        self.lcd_cam.lcd_user().modify(|_, w| {
+        self.lcd_cam.lcd_user().modify(|_, w| unsafe {
             if dummy > 0 {
                 // Enable DUMMY phase in LCD sequence when LCD starts.
                 w.lcd_dummy()
                     .set_bit()
                     // Configure DUMMY cycles. DUMMY cycles = this value + 1. (2 bits)
                     .lcd_dummy_cyclelen()
-                    .variant((dummy - 1) as _)
+                    .bits((dummy - 1) as _)
             } else {
                 w.lcd_dummy().clear_bit()
             }
@@ -384,13 +464,15 @@ impl<'d, TX: Tx, P> I8080<'d, TX, P> {
     }
 
     fn tear_down_send(&mut self) {
+        // This will already be cleared unless the user is trying to cancel,
+        // which is why this is still here.
         self.lcd_cam
             .lcd_user()
             .modify(|_, w| w.lcd_start().clear_bit());
 
         self.lcd_cam
             .lc_dma_int_clr()
-            .write(|w| w.lcd_trans_done_int_clr().clear_bit());
+            .write(|w| w.lcd_trans_done_int_clr().set_bit());
     }
 
     fn start_write_bytes_dma(&mut self, ptr: *const u8, len: usize) -> Result<(), DmaError> {
@@ -401,13 +483,13 @@ impl<'d, TX: Tx, P> I8080<'d, TX, P> {
                 .modify(|_, w| w.lcd_dout().clear_bit());
         } else {
             // Set transfer length.
-            self.lcd_cam.lcd_user().modify(|_, w| {
+            self.lcd_cam.lcd_user().modify(|_, w| unsafe {
                 if len <= 8192 {
                     // Data length in fixed mode. (13 bits)
                     w.lcd_always_out_en()
                         .clear_bit()
                         .lcd_dout_cyclelen()
-                        .variant((len - 1) as _)
+                        .bits((len - 1) as _)
                 } else {
                     // Enable continuous output.
                     w.lcd_always_out_en().set_bit()
@@ -416,69 +498,20 @@ impl<'d, TX: Tx, P> I8080<'d, TX, P> {
                 .set_bit()
             });
 
-            self.tx_channel.prepare_transfer_without_start(
-                DmaPeripheral::LcdCam,
-                false,
-                ptr,
-                len,
-            )?;
+            unsafe {
+                self.tx_chain.fill_for_tx(false, ptr, len)?;
+                self.tx_channel
+                    .prepare_transfer_without_start(DmaPeripheral::LcdCam, &self.tx_chain)?;
+            }
             self.tx_channel.start_transfer()?;
         }
         Ok(())
     }
 }
 
-impl<'d, TX, P> core::fmt::Debug for I8080<'d, TX, P> {
+impl<'d, CH: DmaChannel, P, DM: Mode> core::fmt::Debug for I8080<'d, CH, P, DM> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("I8080").finish()
-    }
-}
-
-/// An in-progress transfer
-#[must_use]
-pub struct Transfer<'t, 'd, TX: Tx, P> {
-    instance: Option<&'t mut I8080<'d, TX, P>>,
-}
-
-impl<'t, 'd, TX: Tx, P> Transfer<'t, 'd, TX, P> {
-    #[allow(clippy::type_complexity)]
-    pub fn wait(mut self) -> Result<(), DmaError> {
-        let instance = self
-            .instance
-            .take()
-            .expect("instance must be available throughout object lifetime");
-
-        {
-            let dma_int_raw = instance.lcd_cam.lc_dma_int_raw();
-            // Wait until LCD_TRANS_DONE is set.
-            while dma_int_raw.read().lcd_trans_done_int_raw().bit_is_clear() {}
-            instance.tear_down_send();
-        }
-
-        if instance.tx_channel.has_error() {
-            Err(DmaError::DescriptorError)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn is_done(&self) -> bool {
-        let int_raw = self
-            .instance
-            .as_ref()
-            .expect("instance must be available throughout object lifetime")
-            .lcd_cam
-            .lc_dma_int_raw();
-        int_raw.read().lcd_trans_done_int_raw().bit_is_set()
-    }
-}
-
-impl<'t, 'd, TX: Tx, P> Drop for Transfer<'t, 'd, TX, P> {
-    fn drop(&mut self) {
-        if let Some(instance) = self.instance.as_mut() {
-            // This will cancel the transfer.
-            instance.tear_down_send();
-        }
     }
 }
 
@@ -610,30 +643,30 @@ where
     type Word = u8;
 
     fn configure(&mut self) {
+        self.pin_0.set_to_push_pull_output(crate::private::Internal);
         self.pin_0
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_0);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_0, crate::private::Internal);
+        self.pin_1.set_to_push_pull_output(crate::private::Internal);
         self.pin_1
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_1);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_1, crate::private::Internal);
+        self.pin_2.set_to_push_pull_output(crate::private::Internal);
         self.pin_2
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_2);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_2, crate::private::Internal);
+        self.pin_3.set_to_push_pull_output(crate::private::Internal);
         self.pin_3
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_3);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_3, crate::private::Internal);
+        self.pin_4.set_to_push_pull_output(crate::private::Internal);
         self.pin_4
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_4);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_4, crate::private::Internal);
+        self.pin_5.set_to_push_pull_output(crate::private::Internal);
         self.pin_5
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_5);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_5, crate::private::Internal);
+        self.pin_6.set_to_push_pull_output(crate::private::Internal);
         self.pin_6
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_6);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_6, crate::private::Internal);
+        self.pin_7.set_to_push_pull_output(crate::private::Internal);
         self.pin_7
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_7);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_7, crate::private::Internal);
     }
 }
 
@@ -755,54 +788,60 @@ where
 {
     type Word = u16;
     fn configure(&mut self) {
+        self.pin_0.set_to_push_pull_output(crate::private::Internal);
         self.pin_0
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_0);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_0, crate::private::Internal);
+        self.pin_1.set_to_push_pull_output(crate::private::Internal);
         self.pin_1
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_1);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_1, crate::private::Internal);
+        self.pin_2.set_to_push_pull_output(crate::private::Internal);
         self.pin_2
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_2);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_2, crate::private::Internal);
+        self.pin_3.set_to_push_pull_output(crate::private::Internal);
         self.pin_3
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_3);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_3, crate::private::Internal);
+        self.pin_4.set_to_push_pull_output(crate::private::Internal);
         self.pin_4
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_4);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_4, crate::private::Internal);
+        self.pin_5.set_to_push_pull_output(crate::private::Internal);
         self.pin_5
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_5);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_5, crate::private::Internal);
+        self.pin_6.set_to_push_pull_output(crate::private::Internal);
         self.pin_6
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_6);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_6, crate::private::Internal);
+        self.pin_7.set_to_push_pull_output(crate::private::Internal);
         self.pin_7
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_7);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_7, crate::private::Internal);
+        self.pin_8.set_to_push_pull_output(crate::private::Internal);
         self.pin_8
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_8);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_8, crate::private::Internal);
+        self.pin_9.set_to_push_pull_output(crate::private::Internal);
         self.pin_9
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_9);
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_9, crate::private::Internal);
         self.pin_10
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_10);
+            .set_to_push_pull_output(crate::private::Internal);
+        self.pin_10
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_10, crate::private::Internal);
         self.pin_11
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_11);
+            .set_to_push_pull_output(crate::private::Internal);
+        self.pin_11
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_11, crate::private::Internal);
         self.pin_12
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_12);
+            .set_to_push_pull_output(crate::private::Internal);
+        self.pin_12
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_12, crate::private::Internal);
         self.pin_13
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_13);
+            .set_to_push_pull_output(crate::private::Internal);
+        self.pin_13
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_13, crate::private::Internal);
         self.pin_14
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_14);
+            .set_to_push_pull_output(crate::private::Internal);
+        self.pin_14
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_14, crate::private::Internal);
         self.pin_15
-            .set_to_push_pull_output()
-            .connect_peripheral_to_output(OutputSignal::LCD_DATA_15);
+            .set_to_push_pull_output(crate::private::Internal);
+        self.pin_15
+            .connect_peripheral_to_output(OutputSignal::LCD_DATA_15, crate::private::Internal);
     }
 }
 

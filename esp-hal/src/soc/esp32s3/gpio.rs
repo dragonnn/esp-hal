@@ -36,6 +36,7 @@
 //! two different banks:
 //!   * `InterruptStatusRegisterAccessBank0`
 //!   * `InterruptStatusRegisterAccessBank1`.
+//!
 //! This trait provides functions to read the interrupt status and NMI status
 //! registers for both the `PRO CPU` and `APP CPU`. The implementation uses the
 //! `gpio` peripheral to access the appropriate registers.
@@ -47,7 +48,6 @@ use crate::{
         InterruptStatusRegisterAccess,
         InterruptStatusRegisterAccessBank0,
         InterruptStatusRegisterAccessBank1,
-        Unknown,
     },
     peripherals::GPIO,
 };
@@ -56,12 +56,12 @@ pub const NUM_PINS: usize = 49;
 
 pub(crate) const FUNC_IN_SEL_OFFSET: usize = 0;
 
-pub type OutputSignalType = u16;
-pub const OUTPUT_SIGNAL_MAX: u16 = 256;
-pub const INPUT_SIGNAL_MAX: u16 = 189;
+pub(crate) type OutputSignalType = u16;
+pub(crate) const OUTPUT_SIGNAL_MAX: u16 = 256;
+pub(crate) const INPUT_SIGNAL_MAX: u16 = 189;
 
-pub const ONE_INPUT: u8 = 0x38;
-pub const ZERO_INPUT: u8 = 0x3c;
+pub(crate) const ONE_INPUT: u8 = 0x38;
+pub(crate) const ZERO_INPUT: u8 = 0x3c;
 
 pub(crate) const GPIO_FUNCTION: AlternateFunction = AlternateFunction::Function1;
 
@@ -76,6 +76,7 @@ pub(crate) fn gpio_intr_enable(int_enable: bool, nmi_enable: bool) -> u8 {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum InputSignal {
     SPIQ              = 0,
     SPID              = 1,
@@ -126,6 +127,9 @@ pub enum InputSignal {
     I2S0I_SD1         = 51,
     I2S0I_SD2         = 52,
     I2S0I_SD3         = 53,
+    USB_EXTPHY_VP     = 55,
+    USB_EXTPHY_VM     = 56,
+    USB_EXTPHY_RCV    = 57,
     USB_OTG_IDDIG     = 58,
     USB_OTG_AVALID    = 59,
     USB_SRP_BVALID    = 60,
@@ -160,6 +164,26 @@ pub enum InputSignal {
     SUBSPID           = 121,
     SUBSPIHD          = 122,
     SUBSPIWP          = 123,
+    CAM_DATA_0        = 133,
+    CAM_DATA_1        = 134,
+    CAM_DATA_2        = 135,
+    CAM_DATA_3        = 136,
+    CAM_DATA_4        = 137,
+    CAM_DATA_5        = 138,
+    CAM_DATA_6        = 139,
+    CAM_DATA_7        = 140,
+    CAM_DATA_8        = 141,
+    CAM_DATA_9        = 142,
+    CAM_DATA_10       = 143,
+    CAM_DATA_11       = 144,
+    CAM_DATA_12       = 145,
+    CAM_DATA_13       = 146,
+    CAM_DATA_14       = 147,
+    CAM_DATA_15       = 148,
+    CAM_PCLK          = 149,
+    CAM_H_ENABLE      = 150,
+    CAM_H_SYNC        = 151,
+    CAM_V_SYNC        = 152,
     SUBSPID4          = 155,
     SUBSPID5          = 156,
     SUBSPID6          = 157,
@@ -190,6 +214,7 @@ pub enum InputSignal {
 /// Peripheral output signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum OutputSignal {
     SPIQ            = 0,
     SPID            = 1,
@@ -224,6 +249,9 @@ pub enum OutputSignal {
     I2S1O_SD        = 30,
     I2S1I_BCK       = 31,
     I2S1I_WS        = 32,
+    USB_EXTPHY_OEN  = 55,
+    USB_EXTPHY_VPO  = 57,
+    USB_EXTPHY_VMO  = 58,
     SPI3_CLK        = 66,
     SPI3_Q          = 67,
     SPI3_D          = 68,
@@ -298,6 +326,7 @@ pub enum OutputSignal {
     LCD_DATA_13     = 146,
     LCD_DATA_14     = 147,
     LCD_DATA_15     = 148,
+    CAM_CLK         = 149,
     LCD_H_ENABLE    = 150,
     LCD_H_SYNC      = 151,
     LCD_V_SYNC      = 152,
@@ -463,5 +492,5 @@ impl InterruptStatusRegisterAccess for InterruptStatusRegisterAccessBank1 {
 }
 
 // implement marker traits on USB pins
-impl<T> crate::otg_fs::UsbDp for Gpio19<T> {}
-impl<T> crate::otg_fs::UsbDm for Gpio20<T> {}
+impl crate::otg_fs::UsbDm for Gpio19 {}
+impl crate::otg_fs::UsbDp for Gpio20 {}

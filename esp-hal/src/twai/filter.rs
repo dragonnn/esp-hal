@@ -1,7 +1,15 @@
 //! Two-wire Automotive Interface (TWAI) Filters
 //!
-//! These are acceptance filters that limit which packets are received by the
-//! TWAI peripheral.
+//! ## Overview
+//! The TWAI controller contains a hardware acceptance filter which can be used
+//! to filter messages of a particular ID. A node that filters out a message
+//! does not receive the message, but will still acknowledge it. Acceptance
+//! filters can make a node more efficient by filtering out messages sent over
+//! the bus that are irrelevant to the node.
+//!
+//! ## Configuration
+//! The acceptance filters are configured using two 32-bit values known as the
+//! acceptance code and the acceptance mask.
 
 use super::{ExtendedId, StandardId};
 
@@ -89,7 +97,7 @@ impl SingleStandardFilter {
     ///
     /// Example matching only even IDs, allowing any rtr value and any payload
     /// data:
-    /// ```
+    /// ```rust, ignore
     /// const FILTER: SingleStandardFilter =
     ///     SingleStandardFilter::new(b"xxxxxxxxxx0", b"x", [b"xxxxxxxx", b"xxxxxxxx"]);
     /// ```
@@ -149,7 +157,7 @@ impl SingleStandardFilter {
     ///
     /// A filter that matches every standard id that is even, is not an rtr
     /// frame, with any bytes for the first two payload bytes.
-    /// ```
+    /// ```rust, ignore
     /// let filter = twai::filter::SingleStandardFilter::new_from_code_mask(
     ///     StandardId::new(0x000).unwrap(),
     ///     StandardId::new(0x001).unwrap(),
@@ -213,7 +221,7 @@ impl SingleExtendedFilter {
     ///
     /// # Examples
     /// A filter matching any odd extended IDs, with any rtr value.
-    /// ```
+    /// ```rust, ignore
     /// const FILTER: twai::filter::SingleExtendedFilter =
     ///     twai::filter::SingleExtendedFilter::new(b"xxxxxxxxxxxxxxxxxxxxxxxxxxxx1", b"x");
     /// ```
@@ -304,7 +312,7 @@ impl DualStandardFilter {
     /// # Examples
     /// A filter that matches any standard id that ends with a 00 or a 11, with
     /// any RTR, and with any payload on the first filter.
-    /// ```
+    /// ```rust, ignore
     /// const FILTER: twai::filter::DualStandardFilter = twai::filter::DualStandardFilter::new(
     ///     b"xxxxxxxxx00",
     ///     b"x",
@@ -452,7 +460,7 @@ impl DualExtendedFilter {
     /// part of the id. For example this id matches: 0x000f000f, 0x000f000a,
     /// 0x0000000a, 0x0000000b.
     /// But it does not match: 0x000a000a
-    /// ```
+    /// ```rust, ignore
     /// const FILTER: twai::filter::DualExtendedFilter =
     ///     twai::filter::DualExtendedFilter::new([b"xxxxxxxxx0000xxx", b"xxxxxxxxx1111xxx"]);
     /// ```

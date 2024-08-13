@@ -2,6 +2,10 @@
 //!
 //! You need to connect via the Serial/JTAG interface to see any output.
 //! Most dev-kits use a USB-UART-bridge - in that case you won't see any output.
+//!
+//! Windows Users: Flashing and then monitoring via espflash will result in any keypress freezing the application.
+//! Please use another serial monitor (e.g. `putty`) on Windows
+//! See https://github.com/esp-rs/espflash/issues/654
 
 //% CHIPS: esp32c3 esp32c6 esp32h2 esp32s3
 
@@ -15,27 +19,29 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    interrupt::{self, Priority},
-    peripherals::{Interrupt, Peripherals},
+    peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
     usb_serial_jtag::UsbSerialJtag,
+    Blocking,
 };
 
-static USB_SERIAL: Mutex<RefCell<Option<UsbSerialJtag>>> = Mutex::new(RefCell::new(None));
+static USB_SERIAL: Mutex<RefCell<Option<UsbSerialJtag<'static, Blocking>>>> =
+    Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let delay = Delay::new(&clocks);
 
     let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
+    usb_serial.set_interrupt_handler(usb_device);
     usb_serial.listen_rx_packet_recv_interrupt();
 
     critical_section::with(|cs| USB_SERIAL.borrow_ref_mut(cs).replace(usb_serial));
-    interrupt::enable(Interrupt::USB_DEVICE, Priority::Priority1).unwrap();
 
     loop {
         critical_section::with(|cs| {
@@ -50,8 +56,8 @@ fn main() -> ! {
     }
 }
 
-#[interrupt]
-fn USB_DEVICE() {
+#[handler]
+fn usb_device() {
     critical_section::with(|cs| {
         let mut usb_serial = USB_SERIAL.borrow_ref_mut(cs);
         let usb_serial = usb_serial.as_mut().unwrap();

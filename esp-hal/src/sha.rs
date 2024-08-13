@@ -1,11 +1,12 @@
-//! # Secure Hash Algorithm peripheral driver
+//! # Secure Hash Algorithm (SHA) Accelerator
 //!
 //! ## Overview
-//! This SHA (Secure Hash Algorithm) driver for ESP chips is a software module
-//! that provides an interface to interact with the SHA peripheral on ESP
-//! microcontroller chips. This driver allows you to perform cryptographic hash
-//! operations using various hash algorithms supported by the SHA peripheral,
-//! such as:
+//! This SHA accelerator is a hardware device that speeds up the SHA algorithm
+//! significantly, compared to a SHA algorithm implemented solely in software
+//!
+//! ## Configuration
+//! This driver allows you to perform cryptographic hash operations using
+//! various hash algorithms supported by the SHA peripheral, such as:
 //!    * SHA-1
 //!    * SHA-224
 //!    * SHA-256
@@ -14,7 +15,7 @@
 //!
 //! The driver supports two working modes:
 //!    * Typical SHA
-//!    * DMA-SHA (Direct Memory Access SHA is NOT implemented yet).
+//!    * DMA-SHA
 //!
 //! It provides functions to update the hash calculation with input data, finish
 //! the hash calculation and retrieve the resulting hash value. The SHA
@@ -27,41 +28,41 @@
 //! to retrieve the hash value and repeat the process for a new hash calculation
 //! if needed.
 //!
-//! ## Example
-//! ```no_run
+//! ## Examples
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::sha::Sha;
+//! # use esp_hal::sha::ShaMode;
+//! # use core::option::Option::None;
+//! # use nb::block;
 //! let source_data = "HELLO, ESPRESSIF!".as_bytes();
 //! let mut remaining = source_data;
 //! let mut hasher = Sha::new(peripherals.SHA, ShaMode::SHA256);
-//!
-//! // Short hashes can be created by decreasing the output buffer to the desired
-//! // length
+//! // Short hashes can be created by decreasing the output buffer to the
+//! // desired length
 //! let mut output = [0u8; 32];
 //!
 //! while remaining.len() > 0 {
-//!     // All the HW Sha functions are infallible so unwrap is fine to use if you use
-//!     // block!
+//!     // All the HW Sha functions are infallible so unwrap is fine to use if
+//!     // you use block!
 //!     remaining = block!(hasher.update(remaining)).unwrap();
 //! }
 //!
-//! // Finish can be called as many times as desired to get multiple copies of the
-//! // output.
+//! // Finish can be called as many times as desired to get multiple copies of
+//! // the output.
 //! block!(hasher.finish(output.as_mut_slice())).unwrap();
 //!
-//! println!("SHA256 Hash output {:02x?}", output);
-//!
-//! let mut hasher = Sha256::new();
-//! hasher.update(source_data);
-//! let soft_result = hasher.finalize();
-//!
-//! println!("SHA256 Hash output {:02x?}", soft_result);
+//! # }
 //! ```
+//! ## Implementation State
+//! - DMA-SHA Mode is not supported.
 
 use core::{convert::Infallible, marker::PhantomData};
 
 use crate::{
     peripheral::{Peripheral, PeripheralRef},
     peripherals::SHA,
-    reg_access::AlignmentHelper,
+    reg_access::{AlignmentHelper, SocDependentEndianess},
     system::PeripheralClockControl,
 };
 
@@ -82,7 +83,7 @@ use crate::{
 pub struct Sha<'d, DM: crate::Mode> {
     sha: PeripheralRef<'d, SHA>,
     mode: ShaMode,
-    alignment_helper: AlignmentHelper,
+    alignment_helper: AlignmentHelper<SocDependentEndianess>,
     cursor: usize,
     first_run: bool,
     finished: bool,
@@ -96,9 +97,9 @@ pub enum ShaMode {
     #[cfg(not(esp32))]
     SHA224,
     SHA256,
-    #[cfg(any(esp32s2, esp32s3, esp32))]
+    #[cfg(any(esp32, esp32s2, esp32s3))]
     SHA384,
-    #[cfg(any(esp32s2, esp32s3, esp32))]
+    #[cfg(any(esp32, esp32s2, esp32s3))]
     SHA512,
     #[cfg(any(esp32s2, esp32s3))]
     SHA512_224,
@@ -132,11 +133,7 @@ fn mode_as_bits(mode: ShaMode) -> u8 {
 impl<'d> Sha<'d, crate::Blocking> {
     /// Create a new instance in [crate::Blocking] mode.
     #[cfg_attr(not(esp32), doc = "Optionally an interrupt handler can be bound.")]
-    pub fn new(
-        sha: impl Peripheral<P = SHA> + 'd,
-        mode: ShaMode,
-        #[cfg(not(esp32))] interrupt: Option<crate::interrupt::InterruptHandler>,
-    ) -> Self {
+    pub fn new(sha: impl Peripheral<P = SHA> + 'd, mode: ShaMode) -> Self {
         crate::into_ref!(sha);
 
         PeripheralClockControl::enable(crate::system::Peripheral::Sha);
@@ -145,18 +142,6 @@ impl<'d> Sha<'d, crate::Blocking> {
         #[cfg(not(esp32))]
         sha.mode()
             .write(|w| unsafe { w.mode().bits(mode_as_bits(mode)) });
-
-        #[cfg(not(esp32))]
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(
-                    crate::peripherals::Interrupt::SHA,
-                    interrupt.handler(),
-                );
-                crate::interrupt::enable(crate::peripherals::Interrupt::SHA, interrupt.priority())
-                    .unwrap();
-            }
-        }
 
         Self {
             sha,
@@ -170,7 +155,20 @@ impl<'d> Sha<'d, crate::Blocking> {
     }
 }
 
-// TODO: Allow/Implemenet SHA512_(u16)
+impl<'d> crate::private::Sealed for Sha<'d, crate::Blocking> {}
+
+#[cfg(not(esp32))]
+impl<'d> crate::InterruptConfigurable for Sha<'d, crate::Blocking> {
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(crate::peripherals::Interrupt::SHA, handler.handler());
+            crate::interrupt::enable(crate::peripherals::Interrupt::SHA, handler.priority())
+                .unwrap();
+        }
+    }
+}
+
+// TODO: Allow/Implement SHA512_(u16)
 
 // A few notes on this implementation with regards to 'memcpy',
 // - It seems that ptr::write_bytes already acts as volatile, while ptr::copy_*

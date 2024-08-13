@@ -14,10 +14,10 @@ use esp_hal::{
     clock::ClockControl,
     delay::Delay,
     etm::Etm,
-    interrupt::{self, Priority},
-    peripherals::{Interrupt, Peripherals, TIMG0},
+    peripherals::{Peripherals, TIMG0},
     prelude::*,
-    timer::{
+    system::SystemControl,
+    timer::timg::{
         etm::{TimerEtmEvents, TimerEtmTasks},
         Timer,
         Timer0,
@@ -25,16 +25,18 @@ use esp_hal::{
     },
 };
 
-static TIMER0: Mutex<RefCell<Option<Timer<Timer0<TIMG0>>>>> = Mutex::new(RefCell::new(None));
+static TIMER0: Mutex<RefCell<Option<Timer<Timer0<TIMG0>, esp_hal::Blocking>>>> =
+    Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    let mut timer0 = timg0.timer0;
+    let timer0 = timg0.timer0;
+    timer0.set_interrupt_handler(tg0_t0_level);
 
     // Configure ETM to stop timer0 when alarm is triggered
     let event = timer0.on_alarm();
@@ -50,14 +52,10 @@ fn main() -> ! {
     // 80 / 2 (default divider) timer clock cycles == 1 us
     timer0.load_alarm_value(100 * 1_000 * 40);
     timer0.set_alarm_active(true);
-
-    // Enable interrupt that will be triggered by the alarm
-    interrupt::enable(Interrupt::TG0_T0_LEVEL, Priority::Priority1).unwrap();
-
-    timer0.listen();
     timer0.set_counter_active(true);
 
     critical_section::with(|cs| {
+        timer0.listen();
         TIMER0.borrow_ref_mut(cs).replace(timer0);
     });
 
@@ -75,8 +73,8 @@ fn main() -> ! {
     }
 }
 
-#[interrupt]
-fn TG0_T0_LEVEL() {
+#[handler]
+fn tg0_t0_level() {
     critical_section::with(|cs| {
         let mut timer0 = TIMER0.borrow_ref_mut(cs);
         let timer0 = timer0.as_mut().unwrap();

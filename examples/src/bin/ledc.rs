@@ -1,7 +1,8 @@
 //! Turns on LED with the option to change LED intensity depending on `duty`
 //! value. Possible values (`u32`) are in range 0..100.
 //!
-//! This assumes that a LED is connected to the pin assigned to `led`. (GPIO0)
+//! The following wiring is assumed:
+//! - LED => GPIO0
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
 
@@ -11,28 +12,29 @@
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
-    gpio::IO,
+    gpio::Io,
     ledc::{
         channel::{self, ChannelIFace},
         timer::{self, TimerIFace},
         LSGlobalClkSource,
+        Ledc,
         LowSpeed,
-        LEDC,
     },
     peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
 };
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let led = io.pins.gpio0.into_push_pull_output();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let led = io.pins.gpio0;
 
-    let mut ledc = LEDC::new(peripherals.LEDC, &clocks);
+    let mut ledc = Ledc::new(peripherals.LEDC, &clocks);
 
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
 

@@ -2,51 +2,49 @@
 //!
 //! This example clears the screen with red and then blue every second.
 //!
-//! Pins used:
-//!
-//! Backlight GPIO45
-//! Reset     GPIO4
-//! CD        GPIO0
-//! WR        GPIO47
-//! D0        GPIO9
-//! D1        GPIO46
-//! D2        GPIO3
-//! D3        GPIO8
-//! D4        GPIO18
-//! D5        GPIO17
-//! D6        GPIO16
-//! D7        GPIO15
+//! The following wiring is assumed:
+//! - Backlight => GPIO45
+//! - Reset     => GPIO4
+//! - CD        => GPIO0
+//! - WR        => GPIO47
+//! - D0        => GPIO9
+//! - D1        => GPIO46
+//! - D2        => GPIO3
+//! - D3        => GPIO8
+//! - D4        => GPIO18
+//! - D5        => GPIO17
+//! - D6        => GPIO16
+//! - D7        => GPIO15
 
 //% CHIPS: esp32s3
-//% FEATURES: embedded-hal-02
 
 #![no_std]
 #![no_main]
 
-use embedded_hal_02::digital::v2::OutputPin;
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    gpio::IO,
+    gpio::{Io, Level, Output},
     lcd_cam::{
         lcd::i8080::{Config, TxEightBits, I8080},
         LcdCam,
     },
     peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
 };
 use esp_println::println;
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let lcd_backlight = io.pins.gpio45;
     let lcd_reset = io.pins.gpio4;
@@ -57,19 +55,14 @@ fn main() -> ! {
     let dma = Dma::new(peripherals.DMA);
     let channel = dma.channel0;
 
-    let (tx_buffer, mut tx_descriptors, _, mut rx_descriptors) = dma_buffers!(32678, 0);
+    let (tx_buffer, tx_descriptors, _, _) = dma_buffers!(32678, 0);
 
-    let channel = channel.configure(
-        false,
-        &mut tx_descriptors,
-        &mut rx_descriptors,
-        DmaPriority::Priority0,
-    );
+    let channel = channel.configure(false, DmaPriority::Priority0);
 
     let delay = Delay::new(&clocks);
 
-    let mut backlight = lcd_backlight.into_push_pull_output();
-    let mut reset = lcd_reset.into_push_pull_output();
+    let mut backlight = Output::new(lcd_backlight, Level::Low);
+    let mut reset = Output::new(lcd_reset, Level::Low);
 
     let tx_pins = TxEightBits::new(
         io.pins.gpio9,
@@ -86,6 +79,7 @@ fn main() -> ! {
     let mut i8080 = I8080::new(
         lcd_cam.lcd,
         channel.tx,
+        tx_descriptors,
         tx_pins,
         20.MHz(),
         Config::default(),
@@ -97,9 +91,9 @@ fn main() -> ! {
         // https://gist.github.com/sukesh-ak/610508bc84779a26efdcf969bf51a2d1
         // https://github.com/lovyan03/LovyanGFX/blob/302169a6f23e9a2a6451f03311c366d182193831/src/lgfx/v1/panel/Panel_ST7796.hpp#L28
 
-        reset.set_low().unwrap();
+        reset.set_low();
         delay.delay_micros(8_000);
-        reset.set_high().unwrap();
+        reset.set_high();
         delay.delay_micros(64_000);
 
         // const CMD_FRMCTR1: u8 = 0xB1;
@@ -119,75 +113,68 @@ fn main() -> ! {
         const CMD_DOCA: u8 = 0xE8; // Display Output Ctrl Adjust
         const CMD_CSCON: u8 = 0xF0; // Command Set Control
 
-        i8080.send(CMD_CSCON, 0, &[0xC3]).unwrap(); // Enable extension command 2 part I
-        i8080.send(CMD_CSCON, 0, &[0x96]).unwrap(); // Enable extension command 2 part II
-        i8080.send(CMD_INVCTR, 0, &[0x01]).unwrap(); // 1-dot inversion
-        i8080
-            .send(
-                CMD_DFUNCTR,
-                0,
-                &[
-                    0x80, // Display Function Control //Bypass
-                    0x22, /* Source Output Scan from S1 to S960, Gate Output scan from G1 to
-                           * G480, scan cycle=2 */
-                    0x3B,
-                ],
-            )
-            .unwrap(); // LCD Drive Line=8*(59+1)
-        i8080
-            .send(
-                CMD_DOCA,
-                0,
-                &[
-                    0x40, 0x8A, 0x00, 0x00, 0x29, // Source eqaulizing period time= 22.5 us
-                    0x19, // Timing for "Gate start"=25 (Tclk)
-                    0xA5, // Timing for "Gate End"=37 (Tclk), Gate driver EQ function ON
-                    0x33,
-                ],
-            )
-            .unwrap();
-        i8080.send(CMD_PWCTR2, 0, &[0x06]).unwrap(); // Power control2   //VAP(GVDD)=3.85+( vcom+vcom offset), VAN(GVCL)=-3.85+(
-                                                     // vcom+vcom offset)
-        i8080.send(CMD_PWCTR3, 0, &[0xA7]).unwrap(); // Power control 3  //Source driving current level=low, Gamma driving current
-                                                     // level=High
-        i8080.send(CMD_VMCTR, 0, &[0x18]).unwrap(); // VCOM Control    //VCOM=0.9
-        delay.delay_micros(120_000);
-        i8080
-            .send(
-                CMD_GMCTRP1,
-                0,
-                &[
-                    0xF0, 0x09, 0x0B, 0x06, 0x04, 0x15, 0x2F, 0x54, 0x42, 0x3C, 0x17, 0x14, 0x18,
-                    0x1B,
-                ],
-            )
-            .unwrap();
-        i8080
-            .send(
-                CMD_GMCTRN1,
-                0,
-                &[
-                    0xE0, 0x09, 0x0B, 0x06, 0x04, 0x03, 0x2B, 0x43, 0x42, 0x3B, 0x16, 0x14, 0x17,
-                    0x1B,
-                ],
-            )
-            .unwrap();
-        delay.delay_micros(120_000);
-        i8080.send(CMD_CSCON, 0, &[0x3C]).unwrap(); // Command Set control // Disable extension command 2 partI
-        i8080.send(CMD_CSCON, 0, &[0x69]).unwrap(); // Command Set control // Disable
-                                                    // extension command 2 partII
+        // This is here mostly to workaround https://github.com/esp-rs/esp-hal/issues/1532
+        let mut send_cmd = |cmd: u8, data: &[u8]| {
+            let buf = &mut tx_buffer[0..data.len()];
+            buf.copy_from_slice(data);
+            i8080.send(cmd, 0, buf).unwrap();
+        };
 
-        i8080.send(0x11, 0, &[]).unwrap(); // ExitSleepMode
+        send_cmd(CMD_CSCON, &[0xC3]); // Enable extension command 2 part I
+        send_cmd(CMD_CSCON, &[0x96]); // Enable extension command 2 part II
+        send_cmd(CMD_INVCTR, &[0x01]); // 1-dot inversion
+        send_cmd(
+            CMD_DFUNCTR,
+            &[
+                0x80, // Display Function Control //Bypass
+                0x22, /* Source Output Scan from S1 to S960, Gate Output scan from G1 to
+                       * G480, scan cycle=2 */
+                0x3B,
+            ],
+        ); // LCD Drive Line=8*(59+1)
+        send_cmd(
+            CMD_DOCA,
+            &[
+                0x40, 0x8A, 0x00, 0x00, 0x29, // Source eqaulizing period time= 22.5 us
+                0x19, // Timing for "Gate start"=25 (Tclk)
+                0xA5, // Timing for "Gate End"=37 (Tclk), Gate driver EQ function ON
+                0x33,
+            ],
+        );
+        send_cmd(CMD_PWCTR2, &[0x06]); // Power control2   //VAP(GVDD)=3.85+( vcom+vcom offset), VAN(GVCL)=-3.85+(
+                                       // vcom+vcom offset)
+        send_cmd(CMD_PWCTR3, &[0xA7]); // Power control 3  //Source driving current level=low, Gamma driving current
+                                       // level=High
+        send_cmd(CMD_VMCTR, &[0x18]); // VCOM Control    //VCOM=0.9
+        delay.delay_micros(120_000);
+        send_cmd(
+            CMD_GMCTRP1,
+            &[
+                0xF0, 0x09, 0x0B, 0x06, 0x04, 0x15, 0x2F, 0x54, 0x42, 0x3C, 0x17, 0x14, 0x18, 0x1B,
+            ],
+        );
+        send_cmd(
+            CMD_GMCTRN1,
+            &[
+                0xE0, 0x09, 0x0B, 0x06, 0x04, 0x03, 0x2B, 0x43, 0x42, 0x3B, 0x16, 0x14, 0x17, 0x1B,
+            ],
+        );
+        delay.delay_micros(120_000);
+        send_cmd(CMD_CSCON, &[0x3C]); // Command Set control // Disable extension command 2 partI
+        send_cmd(CMD_CSCON, &[0x69]); // Command Set control // Disable
+                                      // extension command 2 partII
+
+        send_cmd(0x11, &[]); // ExitSleepMode
         delay.delay_micros(130_000);
-        i8080.send(0x38, 0, &[]).unwrap(); // ExitIdleMode
-        i8080.send(0x29, 0, &[]).unwrap(); // SetDisplayOn
+        send_cmd(0x38, &[]); // ExitIdleMode
+        send_cmd(0x29, &[]); // SetDisplayOn
 
-        i8080.send(0x21, 0, &[]).unwrap(); // SetInvertMode(ColorInversion::Inverted)
+        send_cmd(0x21, &[]); // SetInvertMode(ColorInversion::Inverted)
 
         // let madctl = SetAddressMode::from(options);
-        // i8080.send(madctl)?;
+        // send_cmd(madctl)?;
 
-        i8080.send(0x3A, 0, &[0x55]).unwrap(); // RGB565
+        send_cmd(0x3A, &[0x55]); // RGB565
     }
 
     let width = 320u16;
@@ -210,7 +197,7 @@ fn main() -> ! {
     const RED: u16 = 0b00000_000000_11111;
     const BLUE: u16 = 0b11111_000000_00000;
 
-    backlight.set_high().unwrap();
+    backlight.set_high();
 
     let total_pixels = width as usize * height as usize;
     let total_bytes = total_pixels * 2;

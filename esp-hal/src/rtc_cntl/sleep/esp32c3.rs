@@ -1,6 +1,6 @@
 use super::{TimerWakeupSource, WakeSource, WakeTriggers, WakeupLevel};
 use crate::{
-    gpio::{RTCPinWithResistors, RtcFunction},
+    gpio::{RtcFunction, RtcPinWithResistors},
     regi2c_write_mask,
     rtc_cntl::{sleep::RtcioWakeupSource, Clock, Rtc, RtcClock},
 };
@@ -85,7 +85,12 @@ pub const SIG_GPIO_OUT_IDX: u32 = 128;
 pub const GPIO_NUM_MAX: usize = 22;
 
 impl WakeSource for TimerWakeupSource {
-    fn apply(&self, rtc: &Rtc, triggers: &mut WakeTriggers, _sleep_config: &mut RtcSleepConfig) {
+    fn apply(
+        &self,
+        rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        _sleep_config: &mut RtcSleepConfig,
+    ) {
         triggers.set_timer(true);
         let rtc_cntl = unsafe { &*esp32c3::RTC_CNTL::ptr() };
         let clock_freq = RtcClock::get_slow_freq();
@@ -116,7 +121,7 @@ impl WakeSource for TimerWakeupSource {
 }
 
 impl<'a, 'b> RtcioWakeupSource<'a, 'b> {
-    fn apply_pin(&self, pin: &mut dyn RTCPinWithResistors, level: WakeupLevel) {
+    fn apply_pin(&self, pin: &mut dyn RtcPinWithResistors, level: WakeupLevel) {
         // The pullup/pulldown part is like in gpio_deep_sleep_wakeup_prepare
         let level = match level {
             WakeupLevel::High => {
@@ -172,13 +177,18 @@ fn isolate_digital_gpio() {
             // make pad work as gpio (otherwise, deep_sleep bottom current will rise)
             io_mux
                 .gpio(pin_num)
-                .modify(|_, w| w.mcu_sel().variant(RtcFunction::Digital as u8));
+                .modify(|_, w| unsafe { w.mcu_sel().bits(RtcFunction::Digital as u8) });
         }
     }
 }
 
 impl WakeSource for RtcioWakeupSource<'_, '_> {
-    fn apply(&self, _rtc: &Rtc, triggers: &mut WakeTriggers, sleep_config: &mut RtcSleepConfig) {
+    fn apply(
+        &self,
+        _rtc: &Rtc<'_>,
+        triggers: &mut WakeTriggers,
+        sleep_config: &mut RtcSleepConfig,
+    ) {
         let mut pins = self.pins.borrow_mut();
 
         if pins.is_empty() {
@@ -486,7 +496,7 @@ impl RtcSleepConfig {
         cfg
     }
 
-    pub(crate) fn base_settings(_rtc: &Rtc) {
+    pub(crate) fn base_settings(_rtc: &Rtc<'_>) {
         let cfg = RtcConfig::default();
 
         // settings derived from esp_clk_init -> rtc_init

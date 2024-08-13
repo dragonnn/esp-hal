@@ -7,79 +7,50 @@ use std::{
 };
 
 use anyhow::{bail, Result};
+use cargo::CargoAction;
 use clap::ValueEnum;
+use esp_metadata::Chip;
 use strum::{Display, EnumIter, IntoEnumIterator as _};
 
 use self::cargo::CargoArgsBuilder;
 
 pub mod cargo;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumIter, ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Display,
+    EnumIter,
+    ValueEnum,
+    serde::Serialize,
+)]
+#[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum Package {
+    EspAlloc,
+    EspBacktrace,
+    EspBuild,
     EspHal,
+    EspHalEmbassy,
     EspHalProcmacros,
     EspHalSmartled,
+    EspIeee802154,
     EspLpHal,
+    EspMetadata,
+    EspPrintln,
     EspRiscvRt,
+    EspStorage,
+    EspWifi,
     Examples,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumIter, ValueEnum, serde::Serialize)]
-#[strum(serialize_all = "kebab-case")]
-pub enum Chip {
-    Esp32,
-    Esp32c2,
-    Esp32c3,
-    Esp32c6,
-    Esp32h2,
-    Esp32p4,
-    Esp32s2,
-    Esp32s3,
-}
-
-impl Chip {
-    pub fn target(&self) -> &str {
-        use Chip::*;
-
-        match self {
-            Esp32 => "xtensa-esp32-none-elf",
-            Esp32c2 | Esp32c3 => "riscv32imc-unknown-none-elf",
-            Esp32c6 | Esp32h2 => "riscv32imac-unknown-none-elf",
-            Esp32p4 => "riscv32imafc-unknown-none-elf",
-            Esp32s2 => "xtensa-esp32s2-none-elf",
-            Esp32s3 => "xtensa-esp32s3-none-elf",
-        }
-    }
-
-    pub fn has_lp_core(&self) -> bool {
-        use Chip::*;
-
-        matches!(self, Esp32c6 | Esp32p4 | Esp32s2 | Esp32s3)
-    }
-
-    pub fn lp_target(&self) -> Result<&str> {
-        use Chip::*;
-
-        match self {
-            Esp32c6 => Ok("riscv32imac-unknown-none-elf"),
-            Esp32s2 | Esp32s3 => Ok("riscv32imc-unknown-none-elf"),
-            _ => bail!("Chip does not contain an LP core: '{}'", self),
-        }
-    }
-
-    pub fn pretty_name(&self) -> &str {
-        match self {
-            Chip::Esp32 => "ESP32",
-            Chip::Esp32c2 => "ESP32-C2",
-            Chip::Esp32c3 => "ESP32-C3",
-            Chip::Esp32c6 => "ESP32-C6",
-            Chip::Esp32h2 => "ESP32-H2",
-            Chip::Esp32p4 => "ESP32-P4",
-            Chip::Esp32s2 => "ESP32-S2",
-            Chip::Esp32s3 => "ESP32-S3",
-        }
-    }
+    HilTest,
+    XtensaLx,
+    XtensaLxRt,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -143,7 +114,6 @@ pub fn build_documentation(
     package: Package,
     chip: Chip,
     target: &str,
-    open: bool,
 ) -> Result<()> {
     let package_name = package.to_string();
     let package_path = windows_safe_path(&workspace.join(&package_name));
@@ -157,20 +127,14 @@ pub fn build_documentation(
     }
 
     // Build up an array of command-line arguments to pass to `cargo`:
-    let mut builder = CargoArgsBuilder::default()
+    let builder = CargoArgsBuilder::default()
         .subcommand("doc")
-        .arg("-Zbuild-std=core") // Required for Xtensa, for some reason
         .target(target)
-        .features(&features);
-
-    if open {
-        builder = builder.arg("--open");
-    }
-
-    // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
-    if target.starts_with("xtensa") {
-        builder = builder.toolchain("esp");
-    }
+        .features(&features)
+        .arg("-Zbuild-std=alloc,core")
+        .arg("-Zrustdoc-map")
+        .arg("--lib")
+        .arg("--no-deps");
 
     let args = builder.build();
     log::debug!("{args:#?}");
@@ -230,103 +194,68 @@ pub fn load_examples(path: &Path) -> Result<Vec<Metadata>> {
     Ok(examples)
 }
 
-/// Build the specified example for the specified chip.
-pub fn build_example(
+/// Run or build the specified test or example for the specified chip.
+pub fn execute_app(
     package_path: &Path,
     chip: Chip,
     target: &str,
-    example: &Metadata,
+    app: &Metadata,
+    action: &CargoAction,
 ) -> Result<()> {
     log::info!(
         "Building example '{}' for '{}'",
-        example.example_path().display(),
+        app.example_path().display(),
         chip
     );
-    if !example.features().is_empty() {
-        log::info!("  Features: {}", example.features().join(","));
+    if !app.features().is_empty() {
+        log::info!("  Features: {}", app.features().join(","));
     }
 
-    let bin = if example
-        .example_path()
-        .strip_prefix(package_path)?
-        .starts_with("src/bin")
-    {
-        format!("--bin={}", example.name())
+    let package = app.example_path().strip_prefix(package_path)?;
+    log::info!("Package: {:?}", package);
+    let (bin, subcommand) = if action == &CargoAction::Build {
+        let bin = if package.starts_with("src/bin") {
+            format!("--bin={}", app.name())
+        } else if package.starts_with("tests") {
+            format!("--test={}", app.name())
+        } else {
+            format!("--example={}", app.name())
+        };
+        (bin, "build")
+    } else if package.starts_with("src/bin") {
+        (format!("--bin={}", app.name()), "run")
+    } else if package.starts_with("tests") {
+        (format!("--test={}", app.name()), "test")
     } else {
-        format!("--example={}", example.name())
+        (format!("--example={}", app.name()), "run")
     };
 
-    let mut features = example.features().to_vec();
+    let mut features = app.features().to_vec();
     features.push(chip.to_string());
 
     let mut builder = CargoArgsBuilder::default()
-        .subcommand("build")
-        .arg("-Zbuild-std=alloc,core")
+        .subcommand(subcommand)
         .arg("--release")
         .target(target)
         .features(&features)
         .arg(bin);
 
+    // probe-rs cannot currently do auto detection, so we need to tell probe-rs run
+    // which chip we are testing
+    if subcommand == "test" && chip == Chip::Esp32c2 {
+        builder = builder.arg("--").arg("--speed").arg("15000");
+    }
+
     // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
     if target.starts_with("xtensa") {
         builder = builder.toolchain("esp");
+        builder = builder.arg("-Zbuild-std=core,alloc")
     }
 
     let args = builder.build();
     log::debug!("{args:#?}");
 
-    cargo::run(&args, package_path)?;
-
-    Ok(())
-}
-
-/// Run the specified example for the specified chip.
-pub fn run_example(
-    package_path: &Path,
-    chip: Chip,
-    target: &str,
-    example: &Metadata,
-) -> Result<()> {
-    log::info!(
-        "Building example '{}' for '{}'",
-        example.example_path().display(),
-        chip
-    );
-    if !example.features().is_empty() {
-        log::info!("  Features: {}", example.features().join(","));
-    }
-
-    let bin = if example
-        .example_path()
-        .strip_prefix(package_path)?
-        .starts_with("src/bin")
-    {
-        format!("--bin={}", example.name())
-    } else {
-        format!("--example={}", example.name())
-    };
-
-    let mut features = example.features().to_vec();
-    features.push(chip.to_string());
-
-    let mut builder = CargoArgsBuilder::default()
-        .subcommand("run")
-        .arg("-Zbuild-std=alloc,core")
-        .arg("--release")
-        .target(target)
-        .features(&features)
-        .arg(bin);
-
-    // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
-    if target.starts_with("xtensa") {
-        builder = builder.toolchain("esp");
-    }
-
-    let args = builder.build();
-    log::debug!("{args:#?}");
-
-    cargo::run_with_input(&args, package_path)?;
-    Ok(())
+    cargo::run(&args, package_path)
 }
 
 /// Build the specified package, using the given toolchain/target/features if
@@ -348,7 +277,6 @@ pub fn build_package(
 
     let mut builder = CargoArgsBuilder::default()
         .subcommand("build")
-        .arg("-Zbuild-std=core")
         .arg("--release");
 
     if let Some(toolchain) = toolchain {
@@ -356,6 +284,11 @@ pub fn build_package(
     }
 
     if let Some(target) = target {
+        // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
+        if target.starts_with("xtensa") {
+            builder = builder.toolchain("esp");
+            builder = builder.arg("-Zbuild-std=core,alloc")
+        }
         builder = builder.target(target);
     }
 
@@ -421,7 +354,7 @@ const EFUSE_FIELDS_RS_HEADER: &str = r#"
 //!
 //! For information on how to regenerate these files, please refer to the
 //! `xtask` package's `README.md` file.
-//! 
+//!
 //! Generated on:   $DATE
 //! ESP-IDF Commit: $HASH
 
@@ -453,8 +386,8 @@ pub fn generate_efuse_table(
     // Determine the commit (short) hash of the HEAD commit in the
     // provided ESP-IDF repository:
     let output = Command::new("git")
-        .args(&["rev-parse", "HEAD"])
-        .current_dir(&idf_path)
+        .args(["rev-parse", "HEAD"])
+        .current_dir(idf_path)
         .output()?;
     let idf_hash = String::from_utf8_lossy(&output.stdout[0..=7]).to_string();
 
@@ -566,6 +499,24 @@ pub fn generate_efuse_table(
 
 // ----------------------------------------------------------------------------
 // Helper Functions
+
+/// Return a (sorted) list of paths to each valid Cargo package in the
+/// workspace.
+pub fn package_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(workspace)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            if entry.path().join("Cargo.toml").exists() {
+                paths.push(entry.path());
+            }
+        }
+    }
+
+    paths.sort();
+
+    Ok(paths)
+}
 
 /// Parse the version from the specified package's Cargo manifest.
 pub fn package_version(workspace: &Path, package: Package) -> Result<semver::Version> {

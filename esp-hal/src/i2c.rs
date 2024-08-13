@@ -1,20 +1,58 @@
-//! # I2C Driver
+//! # Inter-Integrated Circuit (I2C)
 //!
-//! ## Overview
-//! The I2C Peripheral Driver for ESP chips is a software module that
-//! facilitates communication with I2C devices using ESP microcontroller chips.
-//! It provides an interface to initialize, configure, and perform read and
-//! write operations over the I2C bus.
+//! I2C is a serial, synchronous, multi-device, half-duplex communication
+//! protocol that allows co-existence of multiple masters and slaves on the
+//! same bus. I2C uses two bidirectional open-drain lines: serial data line
+//! (SDA) and serial clock line (SCL), pulled up by resistors.
 //!
-//! The driver supports features such as handling transmission errors,
-//! asynchronous operations, and interrupt-based communication, also supports
-//! multiple I2C peripheral instances on `ESP32`, `ESP32H2`, `ESP32S2`, and
-//! `ESP32S3` chips
+//! Espressif devices sometimes have more than one I2C controller (also called
+//! port), responsible for handling communication on the I2C bus. A single I2C
+//! controller can be a master or a slave.
 //!
-//! ## Example
-//! Following code shows how to read data from a BMP180 sensor using I2C.
+//! Typically, an I2C slave device has a 7-bit address or 10-bit address.
+//! Espressif devices supports both I2C Standard-mode (Sm) and Fast-mode
+//! (Fm) which can go up to 100KHz and 400KHz respectively.
 //!
-//! ```no_run
+//! ## Configuration
+//!
+//! Each I2C controller is individually configurable, and the usual setting
+//! such as frequency, timeout, and SDA/SCL pins can easily be configured.
+//!
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::i2c::I2C;
+//! # use esp_hal::gpio::Io;
+//! # use core::option::Option::None;
+//! # use crate::esp_hal::prelude::_fugit_RateExtU32;
+//! let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//! // Create a new peripheral object with the described wiring
+//! // and standard I2C clock speed
+//! let mut i2c = I2C::new(
+//!     peripherals.I2C0,
+//!     io.pins.gpio1,
+//!     io.pins.gpio2,
+//!     100.kHz(),
+//!     &clocks,
+//! );
+//! # }
+//! ```
+//! 
+//! ## Usage
+//!
+//! The I2C driver implements a number of third-party traits, with the
+//! intention of making the HAL inter-compatible with various device drivers
+//! from the community. This includes the [embedded-hal] for both 0.2.x and
+//! 1.x.x versions.
+//!
+//! ## Examples
+//! ### Read Data from a BMP180 Sensor
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::i2c::I2C;
+//! # use esp_hal::gpio::Io;
+//! # use core::option::Option::None;
+//! # use crate::esp_hal::prelude::_fugit_RateExtU32;
+//! let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 //! // Create a new peripheral object with the described wiring
 //! // and standard I2C clock speed
 //! let mut i2c = I2C::new(
@@ -27,19 +65,22 @@
 //! loop {
 //!     let mut data = [0u8; 22];
 //!     i2c.write_read(0x77, &[0xaa], &mut data).ok();
-//!
-//!     println!("{:02x?}", data);
 //! }
+//! # }
 //! ```
+
+use core::marker::PhantomData;
 
 use fugit::HertzU32;
 
 use crate::{
     clock::Clocks,
     gpio::{InputPin, InputSignal, OutputPin, OutputSignal},
+    interrupt::InterruptHandler,
     peripheral::{Peripheral, PeripheralRef},
     peripherals::i2c0::{RegisterBlock, COMD},
     system::PeripheralClockControl,
+    InterruptConfigurable,
 };
 
 cfg_if::cfg_if! {
@@ -49,6 +90,9 @@ cfg_if::cfg_if! {
         const I2C_LL_INTR_MASK: u32 = 0x3ffff;
     }
 }
+
+// on ESP32 there is a chance to get trapped in `wait_for_completion` forever
+const MAX_ITERATIONS: u32 = 1_000_000;
 
 /// I2C-specific transmission errors
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,23 +106,37 @@ pub enum Error {
     CommandNrExceeded,
 }
 
+#[cfg(any(feature = "embedded-hal", feature = "async"))]
+#[derive(PartialEq)]
+// This enum is used to keep track of the last operation that was performed
+// in an embedded-hal(-async) I2C::transaction. It used to determine whether
+// a START condition should be issued at the start of the current operation.
+enum LastOpWas {
+    Write,
+    Read,
+    None,
+}
+
 #[cfg(feature = "embedded-hal")]
 impl embedded_hal::i2c::Error for Error {
     fn kind(&self) -> embedded_hal::i2c::ErrorKind {
-        use embedded_hal::i2c::ErrorKind;
+        use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource};
 
         match self {
             Self::ExceedingFifo => ErrorKind::Overrun,
             Self::ArbitrationLost => ErrorKind::ArbitrationLoss,
+            Self::AckCheckFailed => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Unknown),
             _ => ErrorKind::Other,
         }
     }
 }
 
 /// A generic I2C Command
+#[cfg_attr(feature = "debug", derive(Debug))]
 enum Command {
     Start,
     Stop,
+    End,
     Write {
         /// This bit is to set an expected ACK value for the transmitter.
         ack_exp: Ack,
@@ -98,97 +156,115 @@ enum Command {
     },
 }
 
-impl From<Command> for u16 {
-    fn from(c: Command) -> u16 {
-        let opcode = match c {
-            Command::Start => Opcode::RStart,
-            Command::Stop => Opcode::Stop,
-            Command::Write { .. } => Opcode::Write,
-            Command::Read { .. } => Opcode::Read,
-        };
-
-        let length = match c {
-            Command::Start | Command::Stop => 0,
-            Command::Write { length: l, .. } | Command::Read { length: l, .. } => l,
-        };
-
-        let ack_exp = match c {
-            Command::Start | Command::Stop | Command::Read { .. } => Ack::Nack,
-            Command::Write { ack_exp: exp, .. } => exp,
-        };
-
-        let ack_check_en = match c {
-            Command::Start | Command::Stop | Command::Read { .. } => false,
-            Command::Write {
-                ack_check_en: en, ..
-            } => en,
-        };
-
-        let ack_value = match c {
-            Command::Start | Command::Stop | Command::Write { .. } => Ack::Nack,
-            Command::Read { ack_value: ack, .. } => ack,
-        };
-
-        let mut cmd: u16 = length.into();
-
-        if ack_check_en {
-            cmd |= 1 << 8;
-        } else {
-            cmd &= !(1 << 8);
-        }
-
-        if ack_exp == Ack::Nack {
-            cmd |= 1 << 9;
-        } else {
-            cmd &= !(1 << 9);
-        }
-
-        if ack_value == Ack::Nack {
-            cmd |= 1 << 10;
-        } else {
-            cmd &= !(1 << 10);
-        }
-
-        cmd |= (opcode as u16) << 11;
-
-        cmd
-    }
-}
-
 enum OperationType {
     Write = 0,
     Read  = 1,
 }
 
 #[derive(Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "debug", derive(Debug))]
 enum Ack {
-    Ack,
-    Nack,
+    Ack  = 0,
+    Nack = 1,
+}
+impl From<u32> for Ack {
+    fn from(ack: u32) -> Self {
+        match ack {
+            0 => Ack::Ack,
+            1 => Ack::Nack,
+            _ => unreachable!(),
+        }
+    }
+}
+impl From<Ack> for u32 {
+    fn from(ack: Ack) -> u32 {
+        ack as u32
+    }
 }
 
-#[cfg(any(esp32c2, esp32c3, esp32c6, esp32h2, esp32s3))]
+cfg_if::cfg_if! {
+    if #[cfg(any(esp32, esp32s2))] {
+        const OPCODE_RSTART: u32 = 0;
+        const OPCODE_WRITE: u32  = 1;
+        const OPCODE_READ: u32   = 2;
+        const OPCODE_STOP: u32   = 3;
+        const OPCODE_END: u32    = 4;
+    } else if #[cfg(any(esp32c2, esp32c3, esp32c6, esp32h2, esp32s3))] {
+        const OPCODE_RSTART: u32 = 6;
+        const OPCODE_WRITE: u32  = 1;
+        const OPCODE_READ: u32   = 3;
+        const OPCODE_STOP: u32   = 2;
+        const OPCODE_END: u32    = 4;
+    }
+}
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[derive(PartialEq)]
 enum Opcode {
-    RStart = 6,
-    Write  = 1,
-    Read   = 3,
-    Stop   = 2,
+    RStart,
+    Write,
+    Read,
+    Stop,
+    End,
 }
 
-#[cfg(any(esp32, esp32s2))]
-enum Opcode {
-    RStart = 0,
-    Write  = 1,
-    Read   = 2,
-    Stop   = 3,
+impl From<Opcode> for u32 {
+    fn from(opcode: Opcode) -> u32 {
+        match opcode {
+            Opcode::RStart => OPCODE_RSTART,
+            Opcode::Write => OPCODE_WRITE,
+            Opcode::Read => OPCODE_READ,
+            Opcode::Stop => OPCODE_STOP,
+            Opcode::End => OPCODE_END,
+        }
+    }
+}
+impl From<u32> for Opcode {
+    fn from(opcode: u32) -> Self {
+        match opcode {
+            OPCODE_RSTART => Opcode::RStart,
+            OPCODE_WRITE => Opcode::Write,
+            OPCODE_READ => Opcode::Read,
+            OPCODE_STOP => Opcode::Stop,
+            OPCODE_END => Opcode::End,
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// I2C peripheral container (I2C)
-pub struct I2C<'d, T> {
+pub struct I2C<'d, T, DM: crate::Mode> {
     peripheral: PeripheralRef<'d, T>,
+    phantom: PhantomData<DM>,
+}
+
+impl<T> I2C<'_, T, crate::Blocking>
+where
+    T: Instance,
+{
+    /// Reads enough bytes from slave with `address` to fill `buffer`
+    pub fn read(&mut self, address: u8, buffer: &mut [u8]) -> Result<(), Error> {
+        self.peripheral.master_read(address, buffer)
+    }
+
+    /// Writes bytes to slave with address `address`
+    pub fn write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
+        self.peripheral.master_write(addr, bytes)
+    }
+
+    /// Writes bytes to slave with address `address` and then reads enough bytes
+    /// to fill `buffer` *in a single transaction*
+    pub fn write_read(
+        &mut self,
+        address: u8,
+        bytes: &[u8],
+        buffer: &mut [u8],
+    ) -> Result<(), Error> {
+        self.peripheral.master_write_read(address, bytes, buffer)
+    }
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T> embedded_hal_02::blocking::i2c::Read for I2C<'_, T>
+impl<T> embedded_hal_02::blocking::i2c::Read for I2C<'_, T, crate::Blocking>
 where
     T: Instance,
 {
@@ -200,7 +276,7 @@ where
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T> embedded_hal_02::blocking::i2c::Write for I2C<'_, T>
+impl<T> embedded_hal_02::blocking::i2c::Write for I2C<'_, T, crate::Blocking>
 where
     T: Instance,
 {
@@ -212,7 +288,7 @@ where
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T> embedded_hal_02::blocking::i2c::WriteRead for I2C<'_, T>
+impl<T> embedded_hal_02::blocking::i2c::WriteRead for I2C<'_, T, crate::Blocking>
 where
     T: Instance,
 {
@@ -229,42 +305,136 @@ where
 }
 
 #[cfg(feature = "embedded-hal")]
-impl<T> embedded_hal::i2c::ErrorType for I2C<'_, T> {
+impl<T, DM: crate::Mode> embedded_hal::i2c::ErrorType for I2C<'_, T, DM> {
     type Error = Error;
 }
 
 #[cfg(feature = "embedded-hal")]
-impl<T> embedded_hal::i2c::I2c for I2C<'_, T>
+impl<T, DM: crate::Mode> embedded_hal::i2c::I2c for I2C<'_, T, DM>
 where
     T: Instance,
 {
-    fn read(&mut self, address: u8, buffer: &mut [u8]) -> Result<(), Self::Error> {
-        self.peripheral.master_read(address, buffer)
-    }
-
-    fn write(&mut self, address: u8, bytes: &[u8]) -> Result<(), Self::Error> {
-        self.peripheral.master_write(address, bytes)
-    }
-
-    fn write_read(
-        &mut self,
-        address: u8,
-        bytes: &[u8],
-        buffer: &mut [u8],
-    ) -> Result<(), Self::Error> {
-        self.peripheral.master_write_read(address, bytes, buffer)
-    }
-
     fn transaction(
         &mut self,
-        _address: u8,
-        _operations: &mut [embedded_hal::i2c::Operation<'_>],
+        address: u8,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
-        todo!()
+        use embedded_hal::i2c::Operation;
+        let mut last_op = LastOpWas::None;
+        let mut op_iter = operations.iter_mut().peekable();
+        while let Some(op) = op_iter.next() {
+            // Clear all I2C interrupts
+            self.peripheral.clear_all_interrupts();
+
+            // TODO somehow know that we can combine a write and a read into one transaction
+            let cmd_iterator = &mut self.peripheral.register_block().comd_iter();
+            match op {
+                Operation::Write(bytes) => {
+                    // execute a write operation:
+                    // - issue START/RSTART if op is different from previous
+                    // - issue STOP if op is the last one
+                    self.peripheral.write_operation(
+                        address,
+                        bytes,
+                        last_op != LastOpWas::Write,
+                        op_iter.peek().is_none(),
+                        cmd_iterator,
+                    )?;
+                    last_op = LastOpWas::Write;
+                }
+                Operation::Read(buffer) => {
+                    // execute a read operation:
+                    // - issue START/RSTART if op is different from previous
+                    // - issue STOP if op is the last one
+                    self.peripheral.read_operation(
+                        address,
+                        buffer,
+                        last_op != LastOpWas::Read,
+                        op_iter.peek().is_none(),
+                        cmd_iterator,
+                    )?;
+                    last_op = LastOpWas::Read;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
-impl<'d, T> I2C<'d, T>
+impl<'d, T, DM: crate::Mode> I2C<'d, T, DM>
+where
+    T: Instance,
+{
+    fn new_internal<SDA: OutputPin + InputPin, SCL: OutputPin + InputPin>(
+        i2c: impl Peripheral<P = T> + 'd,
+        sda: impl Peripheral<P = SDA> + 'd,
+        scl: impl Peripheral<P = SCL> + 'd,
+        frequency: HertzU32,
+        clocks: &Clocks<'d>,
+        timeout: Option<u32>,
+    ) -> Self {
+        crate::into_ref!(i2c, sda, scl);
+
+        PeripheralClockControl::reset(match i2c.i2c_number() {
+            0 => crate::system::Peripheral::I2cExt0,
+            #[cfg(i2c1)]
+            1 => crate::system::Peripheral::I2cExt1,
+            _ => unreachable!(), // will never happen
+        });
+
+        PeripheralClockControl::enable(match i2c.i2c_number() {
+            0 => crate::system::Peripheral::I2cExt0,
+            #[cfg(i2c1)]
+            1 => crate::system::Peripheral::I2cExt1,
+            _ => unreachable!(), // will never happen
+        });
+
+        let mut i2c = I2C {
+            peripheral: i2c,
+            phantom: PhantomData,
+        };
+
+        // avoid SCL/SDA going low during configuration
+        scl.set_output_high(true, crate::private::Internal);
+        sda.set_output_high(true, crate::private::Internal);
+
+        scl.set_to_open_drain_output(crate::private::Internal);
+        scl.enable_input(true, crate::private::Internal);
+        scl.internal_pull_up(true, crate::private::Internal);
+        scl.connect_peripheral_to_output(
+            i2c.peripheral.scl_output_signal(),
+            crate::private::Internal,
+        );
+        scl.connect_input_to_peripheral(
+            i2c.peripheral.scl_input_signal(),
+            crate::private::Internal,
+        );
+
+        sda.set_to_open_drain_output(crate::private::Internal);
+        sda.enable_input(true, crate::private::Internal);
+        sda.internal_pull_up(true, crate::private::Internal);
+        sda.connect_peripheral_to_output(
+            i2c.peripheral.sda_output_signal(),
+            crate::private::Internal,
+        );
+        sda.connect_input_to_peripheral(
+            i2c.peripheral.sda_input_signal(),
+            crate::private::Internal,
+        );
+
+        i2c.peripheral.setup(frequency, clocks, timeout);
+        i2c
+    }
+
+    fn internal_set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(T::interrupt(), handler.handler());
+            crate::interrupt::enable(T::interrupt(), handler.priority()).unwrap();
+        }
+    }
+}
+
+impl<'d, T> I2C<'d, T, crate::Blocking>
 where
     T: Instance,
 {
@@ -276,7 +446,7 @@ where
         sda: impl Peripheral<P = SDA> + 'd,
         scl: impl Peripheral<P = SCL> + 'd,
         frequency: HertzU32,
-        clocks: &Clocks,
+        clocks: &Clocks<'d>,
     ) -> Self {
         Self::new_with_timeout(i2c, sda, scl, frequency, clocks, None)
     }
@@ -289,42 +459,66 @@ where
         sda: impl Peripheral<P = SDA> + 'd,
         scl: impl Peripheral<P = SCL> + 'd,
         frequency: HertzU32,
-        clocks: &Clocks,
+        clocks: &Clocks<'d>,
         timeout: Option<u32>,
     ) -> Self {
-        crate::into_ref!(i2c, sda, scl);
+        Self::new_internal(i2c, sda, scl, frequency, clocks, timeout)
+    }
+}
 
-        PeripheralClockControl::enable(match i2c.i2c_number() {
-            0 => crate::system::Peripheral::I2cExt0,
-            #[cfg(i2c1)]
-            1 => crate::system::Peripheral::I2cExt1,
-            _ => unreachable!(), // will never happen
-        });
+impl<'d, T> crate::private::Sealed for I2C<'d, T, crate::Blocking> where T: Instance {}
 
-        let mut i2c = I2C { peripheral: i2c };
+impl<'d, T> InterruptConfigurable for I2C<'d, T, crate::Blocking>
+where
+    T: Instance,
+{
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        self.internal_set_interrupt_handler(handler);
+    }
+}
 
-        // avoid SCL/SDA going low during configuration
-        scl.set_output_high(true);
-        sda.set_output_high(true);
-
-        scl.set_to_open_drain_output()
-            .enable_input(true)
-            .internal_pull_up(true)
-            .connect_peripheral_to_output(i2c.peripheral.scl_output_signal())
-            .connect_input_to_peripheral(i2c.peripheral.scl_input_signal());
-
-        sda.set_to_open_drain_output()
-            .enable_input(true)
-            .internal_pull_up(true)
-            .connect_peripheral_to_output(i2c.peripheral.sda_output_signal())
-            .connect_input_to_peripheral(i2c.peripheral.sda_input_signal());
-
-        i2c.peripheral.setup(frequency, clocks, timeout);
-
-        i2c
+#[cfg(feature = "async")]
+impl<'d, T> I2C<'d, T, crate::Async>
+where
+    T: Instance,
+{
+    /// Create a new I2C instance
+    /// This will enable the peripheral but the peripheral won't get
+    /// automatically disabled when this gets dropped.
+    pub fn new_async<SDA: OutputPin + InputPin, SCL: OutputPin + InputPin>(
+        i2c: impl Peripheral<P = T> + 'd,
+        sda: impl Peripheral<P = SDA> + 'd,
+        scl: impl Peripheral<P = SCL> + 'd,
+        frequency: HertzU32,
+        clocks: &Clocks<'d>,
+    ) -> Self {
+        Self::new_with_timeout_async(i2c, sda, scl, frequency, clocks, None)
     }
 
-    #[cfg(feature = "async")]
+    /// Create a new I2C instance with a custom timeout value.
+    /// This will enable the peripheral but the peripheral won't get
+    /// automatically disabled when this gets dropped.
+    pub fn new_with_timeout_async<SDA: OutputPin + InputPin, SCL: OutputPin + InputPin>(
+        i2c: impl Peripheral<P = T> + 'd,
+        sda: impl Peripheral<P = SDA> + 'd,
+        scl: impl Peripheral<P = SCL> + 'd,
+        frequency: HertzU32,
+        clocks: &Clocks<'d>,
+        timeout: Option<u32>,
+    ) -> Self {
+        let mut this = Self::new_internal(i2c, sda, scl, frequency, clocks, timeout);
+
+        let handler = match T::I2C_NUMBER {
+            0 => asynch::i2c0_handler,
+            #[cfg(i2c1)]
+            1 => asynch::i2c1_handler,
+            _ => panic!("Unexpected I2C peripheral"),
+        };
+        this.internal_set_interrupt_handler(handler);
+
+        this
+    }
+
     pub(crate) fn inner(&self) -> &T {
         &self.peripheral
     }
@@ -332,16 +526,16 @@ where
 
 #[cfg(feature = "async")]
 mod asynch {
+    #[cfg(not(esp32))]
     use core::{
         pin::Pin,
         task::{Context, Poll},
     };
 
     use cfg_if::cfg_if;
-    use embassy_futures::select::select;
     use embassy_sync::waitqueue::AtomicWaker;
     use embedded_hal::i2c::Operation;
-    use procmacros::interrupt;
+    use procmacros::handler;
 
     use super::*;
 
@@ -352,10 +546,11 @@ mod asynch {
             const NUM_I2C: usize = 1;
         }
     }
-
+    #[allow(clippy::declare_interior_mutable_const)]
     const INIT: AtomicWaker = AtomicWaker::new();
     static WAKERS: [AtomicWaker; NUM_I2C] = [INIT; NUM_I2C];
 
+    #[cfg_attr(esp32, allow(dead_code))]
     pub(crate) enum Event {
         EndDetect,
         TxComplete,
@@ -363,6 +558,7 @@ mod asynch {
         TxFifoWatermark,
     }
 
+    #[cfg(not(esp32))]
     pub(crate) struct I2cFuture<'a, T>
     where
         T: Instance,
@@ -371,20 +567,38 @@ mod asynch {
         instance: &'a T,
     }
 
+    #[cfg(not(esp32))]
     impl<'a, T> I2cFuture<'a, T>
     where
         T: Instance,
     {
         pub fn new(event: Event, instance: &'a T) -> Self {
-            instance
-                .register_block()
-                .int_ena()
-                .modify(|_, w| match event {
+            instance.register_block().int_ena().modify(|_, w| {
+                let w = match event {
                     Event::EndDetect => w.end_detect().set_bit(),
                     Event::TxComplete => w.trans_complete().set_bit(),
                     #[cfg(not(any(esp32, esp32s2)))]
                     Event::TxFifoWatermark => w.txfifo_wm().set_bit(),
-                });
+                };
+
+                #[cfg(not(esp32))]
+                w.arbitration_lost()
+                    .set_bit()
+                    .time_out()
+                    .set_bit()
+                    .nack()
+                    .set_bit();
+
+                #[cfg(esp32)]
+                w.arbitration_lost()
+                    .set_bit()
+                    .time_out()
+                    .set_bit()
+                    .ack_err()
+                    .set_bit();
+
+                w
+            });
 
             Self { event, instance }
         }
@@ -399,67 +613,80 @@ mod asynch {
                 Event::TxFifoWatermark => r.txfifo_wm().bit_is_clear(),
             }
         }
+
+        fn check_error(&self) -> Result<(), Error> {
+            let r = self.instance.register_block().int_raw().read();
+
+            if r.arbitration_lost().bit_is_set() {
+                return Err(Error::ArbitrationLost);
+            }
+
+            if r.time_out().bit_is_set() {
+                return Err(Error::TimeOut);
+            }
+
+            #[cfg(not(esp32))]
+            if r.nack().bit_is_set() {
+                return Err(Error::AckCheckFailed);
+            }
+
+            #[cfg(esp32)]
+            if r.ack_err().bit_is_set() {
+                return Err(Error::AckCheckFailed);
+            }
+
+            #[cfg(not(esp32))]
+            if r.trans_complete().bit_is_set()
+                && self
+                    .instance
+                    .register_block()
+                    .sr()
+                    .read()
+                    .resp_rec()
+                    .bit_is_clear()
+            {
+                return Err(Error::AckCheckFailed);
+            }
+
+            Ok(())
+        }
     }
 
+    #[cfg(not(esp32))]
     impl<'a, T> core::future::Future for I2cFuture<'a, T>
     where
         T: Instance,
     {
-        type Output = ();
+        type Output = Result<(), Error>;
 
         fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
             WAKERS[self.instance.i2c_number()].register(ctx.waker());
 
+            let error = self.check_error();
+
+            if error.is_err() {
+                return Poll::Ready(error);
+            }
+
             if self.event_bit_is_clear() {
-                Poll::Ready(())
+                Poll::Ready(Ok(()))
             } else {
                 Poll::Pending
             }
         }
     }
 
-    impl<T> I2C<'_, T>
+    impl<T> I2C<'_, T, crate::Async>
     where
         T: Instance,
     {
-        async fn master_read(&mut self, addr: u8, buffer: &mut [u8]) -> Result<(), Error> {
-            // Reset FIFO and command list
-            self.peripheral.reset_fifo();
-            self.peripheral.reset_command_list();
-
-            self.perform_read(
-                addr,
-                buffer,
-                &mut self.peripheral.register_block().comd_iter(),
-            )
-            .await
-        }
-
-        async fn perform_read<'a, I>(
-            &self,
-            addr: u8,
-            buffer: &mut [u8],
-            cmd_iterator: &mut I,
-        ) -> Result<(), Error>
-        where
-            I: Iterator<Item = &'a COMD>,
-        {
-            self.peripheral.setup_read(addr, buffer, cmd_iterator)?;
-            self.peripheral.start_transmission();
-
-            self.read_all_from_fifo(buffer).await?;
-            self.wait_for_completion().await?;
-
-            Ok(())
-        }
-
         #[cfg(any(esp32, esp32s2))]
         async fn read_all_from_fifo(&self, buffer: &mut [u8]) -> Result<(), Error> {
             if buffer.len() > 32 {
                 panic!("On ESP32 and ESP32-S2 the max I2C read is limited to 32 bytes");
             }
 
-            self.wait_for_completion().await?;
+            self.wait_for_completion(false).await?;
 
             for byte in buffer.iter_mut() {
                 *byte = read_fifo(self.peripheral.register_block());
@@ -471,39 +698,6 @@ mod asynch {
         #[cfg(not(any(esp32, esp32s2)))]
         async fn read_all_from_fifo(&self, buffer: &mut [u8]) -> Result<(), Error> {
             self.peripheral.read_all_from_fifo(buffer)
-        }
-
-        async fn master_write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
-            // Reset FIFO and command list
-            self.peripheral.reset_fifo();
-            self.peripheral.reset_command_list();
-
-            self.perform_write(
-                addr,
-                bytes,
-                &mut self.peripheral.register_block().comd_iter(),
-            )
-            .await
-        }
-
-        async fn perform_write<'a, I>(
-            &self,
-            addr: u8,
-            bytes: &[u8],
-            cmd_iterator: &mut I,
-        ) -> Result<(), Error>
-        where
-            I: Iterator<Item = &'a COMD>,
-        {
-            self.peripheral.setup_write(addr, bytes, cmd_iterator)?;
-            let index = self.peripheral.fill_tx_fifo(bytes);
-            self.peripheral.start_transmission();
-
-            // Fill the FIFO with the remaining bytes:
-            self.write_remaining_tx_fifo(index, bytes).await?;
-            self.wait_for_completion().await?;
-
-            Ok(())
         }
 
         #[cfg(any(esp32, esp32s2))]
@@ -534,14 +728,14 @@ mod asynch {
             loop {
                 self.peripheral.check_errors()?;
 
-                I2cFuture::new(Event::TxFifoWatermark, self.inner()).await;
+                I2cFuture::new(Event::TxFifoWatermark, self.inner()).await?;
 
                 self.peripheral
                     .register_block()
                     .int_clr()
                     .write(|w| w.txfifo_wm().clear_bit_by_one());
 
-                I2cFuture::new(Event::TxFifoWatermark, self.inner()).await;
+                I2cFuture::new(Event::TxFifoWatermark, self.inner()).await?;
 
                 if index >= bytes.len() {
                     break Ok(());
@@ -552,83 +746,310 @@ mod asynch {
             }
         }
 
-        async fn wait_for_completion(&self) -> Result<(), Error> {
+        #[cfg(not(esp32))]
+        async fn wait_for_completion(&self, end_only: bool) -> Result<(), Error> {
             self.peripheral.check_errors()?;
 
-            select(
-                I2cFuture::new(Event::TxComplete, self.inner()),
-                I2cFuture::new(Event::EndDetect, self.inner()),
-            )
-            .await;
+            if end_only {
+                I2cFuture::new(Event::EndDetect, self.inner()).await?;
+            } else {
+                let res = embassy_futures::select::select(
+                    I2cFuture::new(Event::TxComplete, self.inner()),
+                    I2cFuture::new(Event::EndDetect, self.inner()),
+                )
+                .await;
 
-            for cmd in self.peripheral.register_block().comd_iter() {
-                if cmd.read().command().bits() != 0x0 && cmd.read().command_done().bit_is_clear() {
-                    return Err(Error::ExecIncomplete);
+                match res {
+                    embassy_futures::select::Either::First(res) => res?,
+                    embassy_futures::select::Either::Second(res) => res?,
                 }
             }
+            self.peripheral.check_all_commands_done()?;
 
+            Ok(())
+        }
+
+        #[cfg(esp32)]
+        async fn wait_for_completion(&self, end_only: bool) -> Result<(), Error> {
+            // for ESP32 we need a timeout here but wasting a timer seems unnecessary
+            // given the short time we spend here
+
+            let mut tout = MAX_ITERATIONS / 10; // adjust the timeout because we are yielding in the loop
+            loop {
+                let interrupts = self.inner().register_block().int_raw().read();
+
+                self.inner().check_errors()?;
+
+                // Handle completion cases
+                // A full transmission was completed (either a STOP condition or END was
+                // processed)
+                if (!end_only && interrupts.trans_complete().bit_is_set())
+                    || interrupts.end_detect().bit_is_set()
+                {
+                    break;
+                }
+
+                tout -= 1;
+                if tout == 0 {
+                    return Err(Error::TimeOut);
+                }
+
+                embassy_futures::yield_now().await;
+            }
+            self.peripheral.check_all_commands_done()?;
+            Ok(())
+        }
+
+        async fn write_operation<'a, I>(
+            &self,
+            address: u8,
+            bytes: &[u8],
+            start: bool,
+            stop: bool,
+            cmd_iterator: &mut I,
+        ) -> Result<(), Error>
+        where
+            I: Iterator<Item = &'a COMD>,
+        {
+            // Reset FIFO and command list
+            self.peripheral.reset_fifo();
+            self.peripheral.reset_command_list();
+            if start {
+                add_cmd(cmd_iterator, Command::Start)?;
+            }
+            self.peripheral.setup_write(address, bytes, cmd_iterator)?;
+            add_cmd(
+                cmd_iterator,
+                if stop { Command::Stop } else { Command::End },
+            )?;
+            let index = self.peripheral.fill_tx_fifo(bytes);
+            self.peripheral.start_transmission();
+
+            // Fill the FIFO with the remaining bytes:
+            self.write_remaining_tx_fifo(index, bytes).await?;
+            self.wait_for_completion(!stop).await?;
+            Ok(())
+        }
+
+        async fn read_operation<'a, I>(
+            &self,
+            address: u8,
+            buffer: &mut [u8],
+            start: bool,
+            stop: bool,
+            cmd_iterator: &mut I,
+        ) -> Result<(), Error>
+        where
+            I: Iterator<Item = &'a COMD>,
+        {
+            // Reset FIFO and command list
+            self.peripheral.reset_fifo();
+            self.peripheral.reset_command_list();
+            if start {
+                add_cmd(cmd_iterator, Command::Start)?;
+            }
+            self.peripheral.setup_read(address, buffer, cmd_iterator)?;
+            add_cmd(
+                cmd_iterator,
+                if stop { Command::Stop } else { Command::End },
+            )?;
+            self.peripheral.start_transmission();
+            self.read_all_from_fifo(buffer).await?;
+            self.wait_for_completion(!stop).await?;
+            Ok(())
+        }
+
+        /// Send data bytes from the `bytes` array to a target slave with the
+        /// address `addr`
+        async fn master_write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
+            // Clear all I2C interrupts
+            self.peripheral.clear_all_interrupts();
+            self.write_operation(
+                addr,
+                bytes,
+                true,
+                true,
+                &mut self.peripheral.register_block().comd_iter(),
+            )
+            .await?;
+            Ok(())
+        }
+
+        /// Read bytes from a target slave with the address `addr`
+        /// The number of read bytes is deterimed by the size of the `buffer`
+        /// argument
+        async fn master_read(&mut self, addr: u8, buffer: &mut [u8]) -> Result<(), Error> {
+            // Clear all I2C interrupts
+            self.peripheral.clear_all_interrupts();
+            self.read_operation(
+                addr,
+                buffer,
+                true,
+                true,
+                &mut self.peripheral.register_block().comd_iter(),
+            )
+            .await?;
+            Ok(())
+        }
+
+        /// Write bytes from the `bytes` array first and then read n bytes into
+        /// the `buffer` array with n being the size of the array.
+        async fn master_write_read(
+            &mut self,
+            addr: u8,
+            bytes: &[u8],
+            buffer: &mut [u8],
+        ) -> Result<(), Error> {
+            // it would be possible to combine the write and read
+            // in one transaction but filling the tx fifo with
+            // the current code is somewhat slow even in release mode
+            // which can cause issues
+
+            // Clear all I2C interrupts
+            self.peripheral.clear_all_interrupts();
+            self.write_operation(
+                addr,
+                bytes,
+                true,
+                false,
+                &mut self.peripheral.register_block().comd_iter(),
+            )
+            .await?;
+            self.peripheral.clear_all_interrupts();
+            self.read_operation(
+                addr,
+                buffer,
+                true,
+                true,
+                &mut self.peripheral.register_block().comd_iter(),
+            )
+            .await?;
+            Ok(())
+        }
+
+        /// Writes bytes to slave with address `address`
+        pub async fn write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
+            self.master_write(addr, bytes).await?;
+            Ok(())
+        }
+
+        /// Reads enough bytes from slave with `address` to fill `buffer`
+        pub async fn read(&mut self, addr: u8, buffer: &mut [u8]) -> Result<(), Error> {
+            self.master_read(addr, buffer).await?;
+            Ok(())
+        }
+
+        /// Writes bytes to slave with address `address` and then reads enough
+        /// bytes to fill `buffer` *in a single transaction*
+        pub async fn write_read(
+            &mut self,
+            addr: u8,
+            bytes: &[u8],
+            buffer: &mut [u8],
+        ) -> Result<(), Error> {
+            self.master_write_read(addr, bytes, buffer).await?;
             Ok(())
         }
     }
 
-    impl<'d, T> embedded_hal_async::i2c::I2c for I2C<'d, T>
+    #[cfg(feature = "embedded-hal")]
+    impl<'d, T> embedded_hal_async::i2c::I2c for I2C<'d, T, crate::Async>
     where
         T: Instance,
     {
-        async fn read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
-            self.master_read(address, read).await
-        }
-
-        async fn write(&mut self, address: u8, write: &[u8]) -> Result<(), Self::Error> {
-            self.master_write(address, write).await
-        }
-
-        async fn write_read(
-            &mut self,
-            address: u8,
-            write: &[u8],
-            read: &mut [u8],
-        ) -> Result<(), Self::Error> {
-            self.master_write(address, write).await?;
-            self.master_read(address, read).await?;
-
-            Ok(())
-        }
-
         async fn transaction(
             &mut self,
-            _address: u8,
-            _operations: &mut [Operation<'_>],
+            address: u8,
+            operations: &mut [Operation<'_>],
         ) -> Result<(), Self::Error> {
-            todo!()
+            let mut last_op = LastOpWas::None;
+            let mut op_iter = operations.iter_mut().peekable();
+            while let Some(op) = op_iter.next() {
+                // Clear all I2C interrupts
+                self.peripheral.clear_all_interrupts();
+
+                let cmd_iterator = &mut self.peripheral.register_block().comd_iter();
+                match op {
+                    Operation::Write(bytes) => {
+                        self.write_operation(
+                            address,
+                            bytes,
+                            last_op != LastOpWas::Write,
+                            op_iter.peek().is_none(),
+                            cmd_iterator,
+                        )
+                        .await?;
+                        last_op = LastOpWas::Write;
+                    }
+                    Operation::Read(buffer) => {
+                        // execute a read operation:
+                        // - issue START/RSTART if op is different from previous
+                        // - issue STOP if op is the last one
+                        self.read_operation(
+                            address,
+                            buffer,
+                            last_op != LastOpWas::Read,
+                            op_iter.peek().is_none(),
+                            cmd_iterator,
+                        )
+                        .await?;
+                        last_op = LastOpWas::Read;
+                    }
+                }
+            }
+            Ok(())
         }
     }
 
-    #[interrupt]
-    fn I2C_EXT0() {
-        unsafe { &*crate::peripherals::I2C0::PTR }
-            .int_ena()
-            .modify(|_, w| w.end_detect().clear_bit().trans_complete().clear_bit());
+    #[handler]
+    pub(super) fn i2c0_handler() {
+        let regs = unsafe { &*crate::peripherals::I2C0::PTR };
+        regs.int_ena().modify(|_, w| {
+            w.end_detect()
+                .clear_bit()
+                .trans_complete()
+                .clear_bit()
+                .arbitration_lost()
+                .clear_bit()
+                .time_out()
+                .clear_bit()
+        });
 
         #[cfg(not(any(esp32, esp32s2)))]
-        unsafe { &*crate::peripherals::I2C0::PTR }
-            .int_ena()
-            .modify(|_, w| w.txfifo_wm().clear_bit());
+        regs.int_ena().modify(|_, w| w.txfifo_wm().clear_bit());
+
+        #[cfg(not(esp32))]
+        regs.int_ena().modify(|_, w| w.nack().clear_bit());
+
+        #[cfg(esp32)]
+        regs.int_ena().modify(|_, w| w.ack_err().clear_bit());
 
         WAKERS[0].wake();
     }
 
     #[cfg(i2c1)]
-    #[interrupt]
-    fn I2C_EXT1() {
-        unsafe { &*crate::peripherals::I2C1::PTR }
-            .int_ena()
-            .modify(|_, w| w.end_detect().clear_bit().trans_complete().clear_bit());
+    #[handler]
+    pub(super) fn i2c1_handler() {
+        let regs = unsafe { &*crate::peripherals::I2C1::PTR };
+        regs.int_ena().modify(|_, w| {
+            w.end_detect()
+                .clear_bit()
+                .trans_complete()
+                .clear_bit()
+                .arbitration_lost()
+                .clear_bit()
+                .time_out()
+                .clear_bit()
+        });
 
         #[cfg(not(any(esp32, esp32s2)))]
-        unsafe { &*crate::peripherals::I2C0::PTR }
-            .int_ena()
-            .modify(|_, w| w.txfifo_wm().clear_bit());
+        regs.int_ena().modify(|_, w| w.txfifo_wm().clear_bit());
+
+        #[cfg(not(esp32))]
+        regs.int_ena().modify(|_, w| w.nack().clear_bit());
+
+        #[cfg(esp32)]
+        regs.int_ena().modify(|_, w| w.ack_err().clear_bit());
 
         WAKERS[1].wake();
     }
@@ -636,6 +1057,10 @@ mod asynch {
 
 /// I2C Peripheral Instance
 pub trait Instance: crate::private::Sealed {
+    const I2C_NUMBER: usize;
+
+    fn interrupt() -> crate::peripherals::Interrupt;
+
     fn scl_output_signal(&self) -> OutputSignal;
     fn scl_input_signal(&self) -> InputSignal;
     fn sda_output_signal(&self) -> OutputSignal;
@@ -645,7 +1070,7 @@ pub trait Instance: crate::private::Sealed {
 
     fn i2c_number(&self) -> usize;
 
-    fn setup(&mut self, frequency: HertzU32, clocks: &Clocks, timeout: Option<u32>) {
+    fn setup(&mut self, frequency: HertzU32, clocks: &Clocks<'_>, timeout: Option<u32>) {
         self.register_block().ctr().modify(|_, w| unsafe {
             // Clear register
             w.bits(0)
@@ -1060,7 +1485,7 @@ pub trait Instance: crate::private::Sealed {
                         .to()
                         .write(|w| w.time_out_en().bit(time_out_en)
                         .time_out_value()
-                        .variant(time_out_value.try_into().unwrap())
+                        .bits(time_out_value.try_into().unwrap())
                     );
                 }
             }
@@ -1076,12 +1501,6 @@ pub trait Instance: crate::private::Sealed {
             return Err(Error::ExceedingFifo);
         }
 
-        // Clear all I2C interrupts
-        self.clear_all_interrupts();
-
-        // RSTART command
-        add_cmd(cmd_iterator, Command::Start)?;
-
         // WRITE command
         add_cmd(
             cmd_iterator,
@@ -1092,8 +1511,6 @@ pub trait Instance: crate::private::Sealed {
             },
         )?;
 
-        add_cmd(cmd_iterator, Command::Stop)?;
-
         self.update_config();
 
         // Load address and R/W bit into FIFO
@@ -1101,26 +1518,6 @@ pub trait Instance: crate::private::Sealed {
             self.register_block(),
             addr << 1 | OperationType::Write as u8,
         );
-
-        Ok(())
-    }
-
-    fn perform_write<'a, I>(
-        &self,
-        addr: u8,
-        bytes: &[u8],
-        cmd_iterator: &mut I,
-    ) -> Result<(), Error>
-    where
-        I: Iterator<Item = &'a COMD>,
-    {
-        self.setup_write(addr, bytes, cmd_iterator)?;
-        let index = self.fill_tx_fifo(bytes);
-        self.start_transmission();
-
-        // Fill the FIFO with the remaining bytes:
-        self.write_remaining_tx_fifo(index, bytes)?;
-        self.wait_for_completion()?;
 
         Ok(())
     }
@@ -1138,12 +1535,6 @@ pub trait Instance: crate::private::Sealed {
             // we could support more by adding multiple read operations
             return Err(Error::ExceedingFifo);
         }
-
-        // Clear all I2C interrupts
-        self.clear_all_interrupts();
-
-        // RSTART command
-        add_cmd(cmd_iterator, Command::Start)?;
 
         // WRITE command
         add_cmd(
@@ -1175,29 +1566,10 @@ pub trait Instance: crate::private::Sealed {
             },
         )?;
 
-        add_cmd(cmd_iterator, Command::Stop)?;
-
         self.update_config();
 
         // Load address and R/W bit into FIFO
         write_fifo(self.register_block(), addr << 1 | OperationType::Read as u8);
-
-        Ok(())
-    }
-
-    fn perform_read<'a, I>(
-        &self,
-        addr: u8,
-        buffer: &mut [u8],
-        cmd_iterator: &mut I,
-    ) -> Result<(), Error>
-    where
-        I: Iterator<Item = &'a COMD>,
-    {
-        self.setup_read(addr, buffer, cmd_iterator)?;
-        self.start_transmission();
-        self.read_all_from_fifo(buffer)?;
-        self.wait_for_completion()?;
 
         Ok(())
     }
@@ -1236,7 +1608,7 @@ pub trait Instance: crate::private::Sealed {
         // wait for completion - then we can just read the data from FIFO
         // once we change to non-fifo mode to support larger transfers that
         // won't work anymore
-        self.wait_for_completion()?;
+        self.wait_for_completion(false)?;
 
         // Read bytes from FIFO
         // FIXME: Handle case where less data has been provided by the slave than
@@ -1254,27 +1626,48 @@ pub trait Instance: crate::private::Sealed {
             .write(|w| unsafe { w.bits(I2C_LL_INTR_MASK) });
     }
 
-    fn wait_for_completion(&self) -> Result<(), Error> {
+    fn wait_for_completion(&self, end_only: bool) -> Result<(), Error> {
+        let mut tout = MAX_ITERATIONS;
         loop {
             let interrupts = self.register_block().int_raw().read();
 
             self.check_errors()?;
 
             // Handle completion cases
-            // A full transmission was completed
-            if interrupts.trans_complete().bit_is_set() || interrupts.end_detect().bit_is_set() {
+            // A full transmission was completed (either a STOP condition or END was
+            // processed)
+            if (!end_only && interrupts.trans_complete().bit_is_set())
+                || interrupts.end_detect().bit_is_set()
+            {
                 break;
             }
+
+            tout -= 1;
+            if tout == 0 {
+                return Err(Error::TimeOut);
+            }
         }
-        for cmd in self.register_block().comd_iter() {
-            if cmd.read().command().bits() != 0x0 && cmd.read().command_done().bit_is_clear() {
+        self.check_all_commands_done()?;
+        Ok(())
+    }
+
+    fn check_all_commands_done(&self) -> Result<(), Error> {
+        // NOTE: on esp32 executing the end command generates the end_detect interrupt
+        //       but does not seem to clear the done bit! So we don't check the done
+        //       status of an end command
+        for cmd_reg in self.register_block().comd_iter() {
+            let cmd = cmd_reg.read();
+
+            if cmd.bits() != 0x0
+                && cmd.opcode().bits() != (OPCODE_END as u8)
+                && !cmd.command_done().bit_is_set()
+            {
                 return Err(Error::ExecIncomplete);
             }
         }
 
         Ok(())
     }
-
     fn check_errors(&self) -> Result<(), Error> {
         let interrupts = self.register_block().int_raw().read();
 
@@ -1372,7 +1765,9 @@ pub trait Instance: crate::private::Sealed {
                 .read()
                 .txfifo_wm()
                 .bit_is_set()
-            {}
+            {
+                self.check_errors()?;
+            }
 
             self.register_block()
                 .int_clr()
@@ -1384,7 +1779,9 @@ pub trait Instance: crate::private::Sealed {
                 .read()
                 .txfifo_wm()
                 .bit_is_set()
-            {}
+            {
+                self.check_errors()?;
+            }
 
             if index >= bytes.len() {
                 break Ok(());
@@ -1436,7 +1833,7 @@ pub trait Instance: crate::private::Sealed {
     #[cfg(not(esp32))]
     fn reset_fifo(&self) {
         // First, reset the fifo buffers
-        self.register_block().fifo_conf().modify(|_, w| {
+        self.register_block().fifo_conf().modify(|_, w| unsafe {
             w.tx_fifo_rst()
                 .set_bit()
                 .rx_fifo_rst()
@@ -1446,9 +1843,9 @@ pub trait Instance: crate::private::Sealed {
                 .fifo_prt_en()
                 .set_bit()
                 .rxfifo_wm_thrhd()
-                .variant(1)
+                .bits(1)
                 .txfifo_wm_thrhd()
-                .variant(8)
+                .bits(8)
         });
 
         self.register_block()
@@ -1469,7 +1866,7 @@ pub trait Instance: crate::private::Sealed {
     #[cfg(esp32)]
     fn reset_fifo(&self) {
         // First, reset the fifo buffers
-        self.register_block().fifo_conf().modify(|_, w| {
+        self.register_block().fifo_conf().modify(|_, w| unsafe {
             w.tx_fifo_rst()
                 .set_bit()
                 .rx_fifo_rst()
@@ -1477,9 +1874,9 @@ pub trait Instance: crate::private::Sealed {
                 .nonfifo_en()
                 .clear_bit()
                 .nonfifo_rx_thres()
-                .variant(1)
+                .bits(1)
                 .nonfifo_tx_thres()
-                .variant(32)
+                .bits(32)
         });
 
         self.register_block()
@@ -1491,13 +1888,79 @@ pub trait Instance: crate::private::Sealed {
             .write(|w| w.rxfifo_full().clear_bit_by_one());
     }
 
-    /// Send data bytes from the `bytes` array to a target slave with the
-    /// address `addr`
-    fn master_write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
+    fn write_operation<'a, I>(
+        &self,
+        address: u8,
+        bytes: &[u8],
+        start: bool,
+        stop: bool,
+        cmd_iterator: &mut I,
+    ) -> Result<(), Error>
+    where
+        I: Iterator<Item = &'a COMD>,
+    {
         // Reset FIFO and command list
         self.reset_fifo();
         self.reset_command_list();
-        self.perform_write(addr, bytes, &mut self.register_block().comd_iter())?;
+
+        if start {
+            add_cmd(cmd_iterator, Command::Start)?;
+        }
+        self.setup_write(address, bytes, cmd_iterator)?;
+        add_cmd(
+            cmd_iterator,
+            if stop { Command::Stop } else { Command::End },
+        )?;
+        let index = self.fill_tx_fifo(bytes);
+        self.start_transmission();
+
+        // Fill the FIFO with the remaining bytes:
+        self.write_remaining_tx_fifo(index, bytes)?;
+        self.wait_for_completion(!stop)?;
+        Ok(())
+    }
+
+    fn read_operation<'a, I>(
+        &self,
+        address: u8,
+        buffer: &mut [u8],
+        start: bool,
+        stop: bool,
+        cmd_iterator: &mut I,
+    ) -> Result<(), Error>
+    where
+        I: Iterator<Item = &'a COMD>,
+    {
+        // Reset FIFO and command list
+        self.reset_fifo();
+        self.reset_command_list();
+
+        if start {
+            add_cmd(cmd_iterator, Command::Start)?;
+        }
+        self.setup_read(address, buffer, cmd_iterator)?;
+        add_cmd(
+            cmd_iterator,
+            if stop { Command::Stop } else { Command::End },
+        )?;
+        self.start_transmission();
+        self.read_all_from_fifo(buffer)?;
+        self.wait_for_completion(!stop)?;
+        Ok(())
+    }
+
+    /// Send data bytes from the `bytes` array to a target slave with the
+    /// address `addr`
+    fn master_write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
+        // Clear all I2C interrupts
+        self.clear_all_interrupts();
+        self.write_operation(
+            addr,
+            bytes,
+            true,
+            true,
+            &mut self.register_block().comd_iter(),
+        )?;
         Ok(())
     }
 
@@ -1505,10 +1968,15 @@ pub trait Instance: crate::private::Sealed {
     /// The number of read bytes is deterimed by the size of the `buffer`
     /// argument
     fn master_read(&mut self, addr: u8, buffer: &mut [u8]) -> Result<(), Error> {
-        // Reset FIFO and command list
-        self.reset_fifo();
-        self.reset_command_list();
-        self.perform_read(addr, buffer, &mut self.register_block().comd_iter())?;
+        // Clear all I2C interrupts
+        self.clear_all_interrupts();
+        self.read_operation(
+            addr,
+            buffer,
+            true,
+            true,
+            &mut self.register_block().comd_iter(),
+        )?;
         Ok(())
     }
 
@@ -1524,8 +1992,24 @@ pub trait Instance: crate::private::Sealed {
         // in one transaction but filling the tx fifo with
         // the current code is somewhat slow even in release mode
         // which can cause issues
-        self.master_write(addr, bytes)?;
-        self.master_read(addr, buffer)?;
+
+        // Clear all I2C interrupts
+        self.clear_all_interrupts();
+        self.write_operation(
+            addr,
+            bytes,
+            true,
+            false,
+            &mut self.register_block().comd_iter(),
+        )?;
+        self.clear_all_interrupts();
+        self.read_operation(
+            addr,
+            buffer,
+            true,
+            true,
+            &mut self.register_block().comd_iter(),
+        )?;
         Ok(())
     }
 }
@@ -1535,7 +2019,40 @@ where
     I: Iterator<Item = &'a COMD>,
 {
     let cmd = cmd_iterator.next().ok_or(Error::CommandNrExceeded)?;
-    cmd.write(|w| unsafe { w.command().bits(command.into()) });
+    unsafe {
+        match command {
+            Command::Start => {
+                cmd.write(|w| w.opcode().rstart());
+            }
+            Command::Stop => {
+                cmd.write(|w| w.opcode().stop());
+            }
+            Command::End => {
+                cmd.write(|w| w.opcode().end());
+            }
+            Command::Write {
+                ack_exp,
+                ack_check_en,
+                length,
+            } => {
+                cmd.write(|w| {
+                    w.opcode().write();
+                    w.ack_exp().bit(ack_exp == Ack::Nack);
+                    w.ack_check_en().bit(ack_check_en);
+                    w.byte_num().bits(length);
+                    w
+                });
+            }
+            Command::Read { ack_value, length } => {
+                cmd.write(|w| {
+                    w.opcode().read();
+                    w.ack_value().bit(ack_value == Ack::Nack);
+                    w.byte_num().bits(length);
+                    w
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1581,6 +2098,8 @@ fn write_fifo(register_block: &RegisterBlock, data: u8) {
 }
 
 impl Instance for crate::peripherals::I2C0 {
+    const I2C_NUMBER: usize = 0;
+
     #[inline(always)]
     fn scl_output_signal(&self) -> OutputSignal {
         OutputSignal::I2CEXT0_SCL
@@ -1609,10 +2128,16 @@ impl Instance for crate::peripherals::I2C0 {
     fn i2c_number(&self) -> usize {
         0
     }
+
+    fn interrupt() -> crate::peripherals::Interrupt {
+        crate::peripherals::Interrupt::I2C_EXT0
+    }
 }
 
 #[cfg(i2c1)]
 impl Instance for crate::peripherals::I2C1 {
+    const I2C_NUMBER: usize = 1;
+
     #[inline(always)]
     fn scl_output_signal(&self) -> OutputSignal {
         OutputSignal::I2CEXT1_SCL
@@ -1641,6 +2166,10 @@ impl Instance for crate::peripherals::I2C1 {
     fn i2c_number(&self) -> usize {
         1
     }
+
+    fn interrupt() -> crate::peripherals::Interrupt {
+        crate::peripherals::Interrupt::I2C_EXT1
+    }
 }
 
 #[cfg(lp_i2c0)]
@@ -1650,7 +2179,7 @@ pub mod lp_i2c {
     use fugit::HertzU32;
 
     use crate::{
-        gpio::{lp_gpio::LowPowerPin, OpenDrain},
+        gpio::lp_io::LowPowerOutputOpenDrain,
         peripherals::{LP_CLKRST, LP_I2C0},
     };
 
@@ -1850,8 +2379,8 @@ pub mod lp_i2c {
     impl LpI2c {
         pub fn new(
             i2c: LP_I2C0,
-            _sda: LowPowerPin<OpenDrain, 6>,
-            _scl: LowPowerPin<OpenDrain, 7>,
+            _sda: LowPowerOutputOpenDrain<'_, 6>,
+            _scl: LowPowerOutputOpenDrain<'_, 7>,
             frequency: HertzU32,
         ) -> Self {
             let me = Self { i2c };
@@ -1869,9 +2398,9 @@ pub mod lp_i2c {
                 lp_aon
                     .gpio_mux()
                     .modify(|r, w| w.sel().bits(r.sel().bits() | (1 << 7)));
-                lp_io.gpio6().modify(|_, w| w.mcu_sel().variant(1)); // TODO
+                lp_io.gpio6().modify(|_, w| w.mcu_sel().bits(1)); // TODO
 
-                lp_io.gpio7().modify(|_, w| w.mcu_sel().variant(1));
+                lp_io.gpio7().modify(|_, w| w.mcu_sel().bits(1));
 
                 // Set output mode to Normal
                 lp_io.pin6().modify(|_, w| w.pad_driver().set_bit());
@@ -2055,7 +2584,7 @@ pub mod lp_i2c {
                     w.time_out_en()
                         .bit(time_out_en)
                         .time_out_value()
-                        .variant(time_out_value.try_into().unwrap())
+                        .bits(time_out_value.try_into().unwrap())
                 });
             }
 

@@ -1,15 +1,15 @@
 //! This shows how to continously receive data via I2S.
 //!
-//! Pins used:
-//! MCLK    GPIO0 (not ESP32)
-//! BCLK    GPIO2
-//! WS      GPIO4
-//! DIN     GPIO5
-//!
 //! Without an additional I2S source device you can connect 3V3 or GND to DIN
 //! to read 0 or 0xFF or connect DIN to WS to read two different values.
 //!
 //! You can also inspect the MCLK, BCLK and WS with a logic analyzer.
+//!
+//! The following wiring is assumed:
+//! - MCLK =>  GPIO0 (not supported on ESP32)
+//! - BCLK =>  GPIO2
+//! - WS   =>  GPIO4
+//! - DIN  =>  GPIO5
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
 
@@ -21,20 +21,21 @@ use esp_hal::{
     clock::ClockControl,
     dma::{Dma, DmaPriority},
     dma_buffers,
-    gpio::IO,
+    gpio::Io,
     i2s::{DataFormat, I2s, I2sReadDma, Standard},
     peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
 };
 use esp_println::println;
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let dma = Dma::new(peripherals.DMA);
     #[cfg(any(feature = "esp32", feature = "esp32s2"))]
@@ -42,7 +43,7 @@ fn main() -> ! {
     #[cfg(not(any(feature = "esp32", feature = "esp32s2")))]
     let dma_channel = dma.channel0;
 
-    let (_, mut tx_descriptors, mut rx_buffer, mut rx_descriptors) = dma_buffers!(0, 4 * 4092);
+    let (_, tx_descriptors, mut rx_buffer, rx_descriptors) = dma_buffers!(0, 4 * 4092);
 
     // Here we test that the type is
     // 1) reasonably simple (or at least this will flag changes that may make it
@@ -53,19 +54,14 @@ fn main() -> ! {
         Standard::Philips,
         DataFormat::Data16Channel16,
         44100.Hz(),
-        dma_channel.configure(
-            false,
-            &mut tx_descriptors,
-            &mut rx_descriptors,
-            DmaPriority::Priority0,
-        ),
+        dma_channel.configure(false, DmaPriority::Priority0),
+        tx_descriptors,
+        rx_descriptors,
         &clocks,
     );
 
-    #[cfg(esp32)]
-    {
-        i2s.with_mclk(io.pins.gpio0);
-    }
+    #[cfg(not(feature = "esp32"))]
+    let i2s = i2s.with_mclk(io.pins.gpio0);
 
     let mut i2s_rx = i2s
         .i2s_rx

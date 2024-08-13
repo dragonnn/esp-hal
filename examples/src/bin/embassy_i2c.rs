@@ -1,48 +1,60 @@
 //! Embassy I2C
 //!
-//! Folowing pins are used:
-//! SDA    GPIO4
-//! SCL    GPIO5
-//!
 //! Depending on your target and the board you are using you have to change the
 //! pins.
 //!
 //! This is an example of running the embassy executor with IC2. It uses an
 //! LIS3DH to get accelerometer data.
+//!
+//! Folowing pins are used:
+//! - SDA => GPIO4
+//! - SCL => GPIO5
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-executor-thread embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
-    embassy::{self},
-    gpio::IO,
+    gpio::Io,
     i2c::I2C,
     peripherals::Peripherals,
     prelude::*,
-    timer::TimerGroup,
+    system::SystemControl,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
 };
 use lis3dh_async::{Lis3dh, Range, SlaveAddr};
 
-#[main]
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timg0);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timers = [OneShotTimer::new(timer0)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 1], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let i2c0 = I2C::new(
+    let i2c0 = I2C::new_async(
         peripherals.I2C0,
         io.pins.gpio4,
         io.pins.gpio5,

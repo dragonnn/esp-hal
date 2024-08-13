@@ -1,4 +1,7 @@
-//! Control LED on GPIO1 by the systimer via ETM
+//! Control LED by the systimer via ETM without involving the CPU.
+
+//! The following wiring is assumed:
+//! - LED => GPIO1
 
 //% CHIPS: esp32c6 esp32h2
 
@@ -8,10 +11,15 @@
 use esp_backtrace as _;
 use esp_hal::{
     etm::Etm,
-    gpio::{etm::GpioEtmChannels, IO},
+    gpio::{
+        etm::{GpioEtmChannels, GpioEtmOutputConfig},
+        Io,
+        Level,
+        Pull,
+    },
     peripherals::Peripherals,
     prelude::*,
-    systimer::{etm::SysTimerEtmEvent, SystemTimer},
+    timer::systimer::{etm::SysTimerEtmEvent, SystemTimer},
 };
 use fugit::ExtU32;
 
@@ -23,12 +31,19 @@ fn main() -> ! {
     let mut alarm0 = syst.alarm0.into_periodic();
     alarm0.set_period(1u32.secs());
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let mut led = io.pins.gpio1.into_push_pull_output();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut led = io.pins.gpio1;
 
     // setup ETM
     let gpio_ext = GpioEtmChannels::new(peripherals.GPIO_SD);
-    let led_task = gpio_ext.channel0_task.toggle(&mut led);
+    let led_task = gpio_ext.channel0_task.toggle(
+        &mut led,
+        GpioEtmOutputConfig {
+            open_drain: false,
+            pull: Pull::None,
+            initial_state: Level::High,
+        },
+    );
 
     let timer_event = SysTimerEtmEvent::new(&mut alarm0);
 

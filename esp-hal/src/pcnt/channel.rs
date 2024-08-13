@@ -1,252 +1,250 @@
-//! # PCNT - channel configuration
+//! # PCNT - Channel Configuration
 //!
 //! ## Overview
-//! The `channel` module is part of the `PCNT` peripheral driver
-//! for `ESP` chips.
-//!
-//! It provides a convenient and efficient way to configure and use
-//! individual channels of the `PCNT` peripheral of pulse counting and signal
-//! edge detection on ESP chips.
+//! The `channel` module allows users to configure and manage individual
+//! channels of the `PCNT` peripheral. It provides methods to set various
+//! parameters for each channel, such as control modes for signal edges, action
+//! on control level, and configurations for positive and negative edge count
+//! modes.
 
-use super::unit;
+use core::marker::PhantomData;
+
 use crate::{
-    gpio::{InputPin, InputSignal, ONE_INPUT, ZERO_INPUT},
+    gpio::{InputPin, InputSignal, Pull, ONE_INPUT, ZERO_INPUT},
     peripheral::Peripheral,
     peripherals::GPIO,
 };
 
-/// Channel number
-#[derive(PartialEq, Eq, Copy, Clone, Debug)]
-pub enum Number {
-    Channel0,
-    Channel1,
+/// Configuration for an PCNT input pin
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct PcntInputConfig {
+    /// Configuration for the internal pull-up resistors
+    pub pull: Pull,
 }
 
-/// PCNT channel action on signal edge
-#[derive(Debug, Copy, Clone, Default)]
-pub enum EdgeMode {
-    /// Hold current count value
-    Hold      = 0,
-    /// Increase count value
-    #[default]
-    Increment = 1,
-    /// Decrease count value
-    Decrement = 2,
+impl Default for PcntInputConfig {
+    fn default() -> Self {
+        Self { pull: Pull::None }
+    }
 }
 
-/// PCNT channel action on control level
-#[derive(Debug, Copy, Clone, Default)]
-pub enum CtrlMode {
-    /// Keep current count mode
-    Keep    = 0,
-    /// Invert current count mode (increase -> decrease, decrease -> increase)
-    #[default]
-    Reverse = 1,
-    /// Hold current count value
-    Disable = 2,
-}
-
-/// Pulse Counter configuration for a single channel
-#[derive(Debug, Copy, Clone, Default)]
-pub struct Config {
-    /// PCNT low control mode
-    pub lctrl_mode: CtrlMode,
-    /// PCNT high control mode
-    pub hctrl_mode: CtrlMode,
-    /// PCNT signal positive edge count mode
-    pub pos_edge: EdgeMode,
-    /// PCNT signal negative edge count mode
-    pub neg_edge: EdgeMode,
-    pub invert_ctrl: bool,
-    pub invert_sig: bool,
-}
+pub use crate::peripherals::pcnt::unit::conf0::{CTRL_MODE as CtrlMode, EDGE_MODE as EdgeMode};
 
 /// PcntPin can be always high, always low, or an actual pin
 #[derive(Clone, Copy)]
 pub struct PcntSource {
     source: u8,
+    inverted: bool,
 }
 
 impl PcntSource {
-    pub fn from_pin<'a, P: InputPin>(pin: impl Peripheral<P = P> + 'a) -> Self {
+    pub fn from_pin<'a, P: InputPin>(
+        pin: impl Peripheral<P = P> + 'a,
+        pin_config: PcntInputConfig,
+    ) -> Self {
         crate::into_ref!(pin);
+
+        pin.init_input(
+            pin_config.pull == Pull::Down,
+            pin_config.pull == Pull::Up,
+            crate::private::Internal,
+        );
+
         Self {
-            source: pin.number(),
+            source: pin.number(crate::private::Internal),
+            inverted: false,
         }
     }
     pub fn always_high() -> Self {
-        Self { source: ONE_INPUT }
+        Self {
+            source: ONE_INPUT,
+            inverted: false,
+        }
     }
     pub fn always_low() -> Self {
-        Self { source: ZERO_INPUT }
-    }
-}
-
-pub struct Channel {
-    unit: unit::Number,
-    channel: Number,
-}
-
-impl Channel {
-    /// return a new Channel
-    pub(super) fn new(unit: unit::Number, channel: Number) -> Self {
-        Self { unit, channel }
-    }
-
-    /// Configure the channel
-    pub fn configure(&mut self, ctrl_signal: PcntSource, edge_signal: PcntSource, config: Config) {
-        let pcnt = unsafe { &*crate::peripherals::PCNT::ptr() };
-        let conf0 = match self.unit {
-            unit::Number::Unit0 => pcnt.u0_conf0(),
-            unit::Number::Unit1 => pcnt.u1_conf0(),
-            unit::Number::Unit2 => pcnt.u2_conf0(),
-            unit::Number::Unit3 => pcnt.u3_conf0(),
-            #[cfg(esp32)]
-            unit::Number::Unit4 => pcnt.u4_conf0(),
-            #[cfg(esp32)]
-            unit::Number::Unit5 => pcnt.u5_conf0(),
-            #[cfg(esp32)]
-            unit::Number::Unit6 => pcnt.u6_conf0(),
-            #[cfg(esp32)]
-            unit::Number::Unit7 => pcnt.u7_conf0(),
-        };
-        match self.channel {
-            Number::Channel0 => {
-                conf0.modify(|_, w| unsafe {
-                    w.ch0_hctrl_mode()
-                        .bits(config.hctrl_mode as u8)
-                        .ch0_lctrl_mode()
-                        .bits(config.lctrl_mode as u8)
-                        .ch0_neg_mode()
-                        .bits(config.neg_edge as u8)
-                        .ch0_pos_mode()
-                        .bits(config.pos_edge as u8)
-                });
-            }
-            Number::Channel1 => {
-                conf0.modify(|_, w| unsafe {
-                    w.ch1_hctrl_mode()
-                        .bits(config.hctrl_mode as u8)
-                        .ch1_lctrl_mode()
-                        .bits(config.lctrl_mode as u8)
-                        .ch1_neg_mode()
-                        .bits(config.neg_edge as u8)
-                        .ch1_pos_mode()
-                        .bits(config.pos_edge as u8)
-                });
-            }
+        Self {
+            source: ZERO_INPUT,
+            inverted: false,
         }
-        self.set_ctrl_signal(ctrl_signal, config.invert_ctrl);
-        self.set_edge_signal(edge_signal, config.invert_sig);
+    }
+
+    pub fn invert(self) -> Self {
+        Self {
+            source: self.source,
+            inverted: !self.inverted,
+        }
+    }
+}
+
+pub struct Channel<'d, const UNIT: usize, const NUM: usize> {
+    _phantom: PhantomData<&'d ()>,
+    // Individual channels are not Send, since they share registers.
+    _not_send: PhantomData<*const ()>,
+}
+
+impl<'d, const UNIT: usize, const NUM: usize> Channel<'d, UNIT, NUM> {
+    /// return a new Channel
+    pub(super) fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+            _not_send: PhantomData,
+        }
+    }
+
+    /// Configures how the channel behaves based on the level of the control
+    /// signal.
+    ///
+    /// * `low` - The behaviour of the channel when the control signal is low.
+    /// * `high` - The behaviour of the channel when the control signal is high.
+    pub fn set_ctrl_mode(&self, low: CtrlMode, high: CtrlMode) {
+        let pcnt = unsafe { &*crate::peripherals::PCNT::ptr() };
+        let conf0 = pcnt.unit(UNIT).conf0();
+
+        conf0.modify(|_, w| {
+            w.ch_hctrl_mode(NUM as u8)
+                .variant(high)
+                .ch_lctrl_mode(NUM as u8)
+                .variant(low)
+        });
+    }
+
+    /// Configures how the channel affects the counter based on the transition
+    /// made by the input signal.
+    ///
+    /// * `neg_edge` - The effect on the counter when the input signal goes 1 ->
+    ///   0.
+    /// * `pos_edge` - The effect on the counter when the input signal goes 0 ->
+    ///   1.
+    pub fn set_input_mode(&self, neg_edge: EdgeMode, pos_edge: EdgeMode) {
+        let pcnt = unsafe { &*crate::peripherals::PCNT::ptr() };
+        let conf0 = pcnt.unit(UNIT).conf0();
+
+        conf0.modify(|_, w| {
+            w.ch_neg_mode(NUM as u8).variant(neg_edge);
+            w.ch_pos_mode(NUM as u8).variant(pos_edge)
+        });
     }
 
     /// Set the control signal (pin/high/low) for this channel
-    pub fn set_ctrl_signal(&self, source: PcntSource, invert: bool) -> &Self {
-        let signal = match self.unit {
-            unit::Number::Unit0 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT0_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT0_CTRL_CH1,
+    pub fn set_ctrl_signal(&self, source: PcntSource) -> &Self {
+        let signal = match UNIT {
+            0 => match NUM {
+                0 => InputSignal::PCNT0_CTRL_CH0,
+                1 => InputSignal::PCNT0_CTRL_CH1,
+                _ => unreachable!(),
             },
-            unit::Number::Unit1 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT1_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT1_CTRL_CH1,
+            1 => match NUM {
+                0 => InputSignal::PCNT1_CTRL_CH0,
+                1 => InputSignal::PCNT1_CTRL_CH1,
+                _ => unreachable!(),
             },
-            unit::Number::Unit2 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT2_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT2_CTRL_CH1,
+            2 => match NUM {
+                0 => InputSignal::PCNT2_CTRL_CH0,
+                1 => InputSignal::PCNT2_CTRL_CH1,
+                _ => unreachable!(),
             },
-            unit::Number::Unit3 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT3_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT3_CTRL_CH1,
-            },
-            #[cfg(esp32)]
-            unit::Number::Unit4 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT4_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT4_CTRL_CH1,
-            },
-            #[cfg(esp32)]
-            unit::Number::Unit5 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT5_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT5_CTRL_CH1,
+            3 => match NUM {
+                0 => InputSignal::PCNT3_CTRL_CH0,
+                1 => InputSignal::PCNT3_CTRL_CH1,
+                _ => unreachable!(),
             },
             #[cfg(esp32)]
-            unit::Number::Unit6 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT6_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT6_CTRL_CH1,
+            4 => match NUM {
+                0 => InputSignal::PCNT4_CTRL_CH0,
+                1 => InputSignal::PCNT4_CTRL_CH1,
+                _ => unreachable!(),
             },
             #[cfg(esp32)]
-            unit::Number::Unit7 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT7_CTRL_CH0,
-                Number::Channel1 => InputSignal::PCNT7_CTRL_CH1,
+            5 => match NUM {
+                0 => InputSignal::PCNT5_CTRL_CH0,
+                1 => InputSignal::PCNT5_CTRL_CH1,
+                _ => unreachable!(),
             },
+            #[cfg(esp32)]
+            6 => match NUM {
+                0 => InputSignal::PCNT6_CTRL_CH0,
+                1 => InputSignal::PCNT6_CTRL_CH1,
+                _ => unreachable!(),
+            },
+            #[cfg(esp32)]
+            7 => match NUM {
+                0 => InputSignal::PCNT7_CTRL_CH0,
+                1 => InputSignal::PCNT7_CTRL_CH1,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
         };
 
         if (signal as usize) <= crate::gpio::INPUT_SIGNAL_MAX as usize {
             unsafe { &*GPIO::PTR }
                 .func_in_sel_cfg(signal as usize)
                 .modify(|_, w| unsafe {
-                    w.sel()
-                        .set_bit()
-                        .in_inv_sel()
-                        .bit(invert)
-                        .in_sel()
-                        .bits(source.source)
+                    w.sel().set_bit();
+                    w.in_inv_sel().bit(source.inverted);
+                    w.in_sel().bits(source.source)
                 });
         }
         self
     }
 
     /// Set the edge signal (pin/high/low) for this channel
-    pub fn set_edge_signal(&self, source: PcntSource, invert: bool) -> &Self {
-        let signal = match self.unit {
-            unit::Number::Unit0 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT0_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT0_SIG_CH1,
+    pub fn set_edge_signal(&self, source: PcntSource) -> &Self {
+        let signal = match UNIT {
+            0 => match NUM {
+                0 => InputSignal::PCNT0_SIG_CH0,
+                1 => InputSignal::PCNT0_SIG_CH1,
+                _ => unreachable!(),
             },
-            unit::Number::Unit1 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT1_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT1_SIG_CH1,
+            1 => match NUM {
+                0 => InputSignal::PCNT1_SIG_CH0,
+                1 => InputSignal::PCNT1_SIG_CH1,
+                _ => unreachable!(),
             },
-            unit::Number::Unit2 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT2_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT2_SIG_CH1,
+            2 => match NUM {
+                0 => InputSignal::PCNT2_SIG_CH0,
+                1 => InputSignal::PCNT2_SIG_CH1,
+                _ => unreachable!(),
             },
-            unit::Number::Unit3 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT3_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT3_SIG_CH1,
-            },
-            #[cfg(esp32)]
-            unit::Number::Unit4 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT4_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT4_SIG_CH1,
-            },
-            #[cfg(esp32)]
-            unit::Number::Unit5 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT5_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT5_SIG_CH1,
+            3 => match NUM {
+                0 => InputSignal::PCNT3_SIG_CH0,
+                1 => InputSignal::PCNT3_SIG_CH1,
+                _ => unreachable!(),
             },
             #[cfg(esp32)]
-            unit::Number::Unit6 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT6_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT6_SIG_CH1,
+            4 => match NUM {
+                0 => InputSignal::PCNT4_SIG_CH0,
+                1 => InputSignal::PCNT4_SIG_CH1,
+                _ => unreachable!(),
             },
             #[cfg(esp32)]
-            unit::Number::Unit7 => match self.channel {
-                Number::Channel0 => InputSignal::PCNT7_SIG_CH0,
-                Number::Channel1 => InputSignal::PCNT7_SIG_CH1,
+            5 => match NUM {
+                0 => InputSignal::PCNT5_SIG_CH0,
+                1 => InputSignal::PCNT5_SIG_CH1,
+                _ => unreachable!(),
             },
+            #[cfg(esp32)]
+            6 => match NUM {
+                0 => InputSignal::PCNT6_SIG_CH0,
+                1 => InputSignal::PCNT6_SIG_CH1,
+                _ => unreachable!(),
+            },
+            #[cfg(esp32)]
+            7 => match NUM {
+                0 => InputSignal::PCNT7_SIG_CH0,
+                1 => InputSignal::PCNT7_SIG_CH1,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
         };
 
         if (signal as usize) <= crate::gpio::INPUT_SIGNAL_MAX as usize {
             unsafe { &*GPIO::PTR }
                 .func_in_sel_cfg(signal as usize)
                 .modify(|_, w| unsafe {
-                    w.sel()
-                        .set_bit()
-                        .in_inv_sel()
-                        .bit(invert)
-                        .in_sel()
-                        .bits(source.source)
+                    w.sel().set_bit();
+                    w.in_inv_sel().bit(source.inverted);
+                    w.in_sel().bits(source.source)
                 });
         }
         self

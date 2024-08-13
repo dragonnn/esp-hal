@@ -1,9 +1,12 @@
 //! This shows a very basic example of running code on the LP core.
 //!
-//! Code on LP core increments a counter and continuously toggles GPIO1. The
+//! Code on LP core increments a counter and continuously toggles LED. The
 //! current value is printed by the HP core.
 //!
 //! Make sure to first compile the `esp-lp-hal/examples/blinky.rs` example
+//!
+//! The following wiring is assumed:
+//! - LED => GPIO1
 
 //% CHIPS: esp32c6
 
@@ -12,7 +15,7 @@
 
 use esp_backtrace as _;
 use esp_hal::{
-    gpio::{lp_gpio::IntoLowPowerPin, IO},
+    gpio::{lp_io::LowPowerOutput, Io},
     lp_core::{LpCore, LpCoreWakeupSource},
     peripherals::Peripherals,
     prelude::*,
@@ -24,8 +27,8 @@ fn main() -> ! {
     let peripherals = Peripherals::take();
 
     // configure GPIO 1 as LP output pin
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let lp_pin = io.pins.gpio1.into_low_power().into_push_pull_output();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let lp_pin = LowPowerOutput::new(io.pins.gpio1);
 
     let mut lp_core = LpCore::new(peripherals.LP_CORE);
     lp_core.stop();

@@ -12,7 +12,10 @@
 use core::ptr::addr_of_mut;
 
 use self::peripherals::{LPWR, TIMG0, TIMG1};
-use crate::{rtc_cntl::Rtc, timer::Wdt};
+use crate::{
+    rtc_cntl::{Rtc, SocResetReason},
+    timer::timg::Wdt,
+};
 
 pub mod cpu_control;
 pub mod efuse;
@@ -22,7 +25,18 @@ pub mod peripherals;
 pub mod psram;
 pub mod radio_clocks;
 pub mod trng;
+
 pub mod ulp_core;
+
+/// The name of the chip ("esp32s3") as `&str`
+#[macro_export]
+macro_rules! chip {
+    () => {
+        "esp32s3"
+    };
+}
+
+pub use chip;
 
 pub(crate) mod constants {
     pub const I2S_SCLK: u32 = 160_000_000;
@@ -35,9 +49,10 @@ pub(crate) mod constants {
 
     pub const SOC_DRAM_LOW: u32 = 0x3FC8_8000;
     pub const SOC_DRAM_HIGH: u32 = 0x3FD0_0000;
+
+    pub const RC_FAST_CLK: fugit::HertzU32 = fugit::HertzU32::kHz(17500);
 }
 
-#[cfg(feature = "rt")]
 #[doc(hidden)]
 #[link_section = ".rwtext"]
 pub unsafe fn configure_cpu_caches() {
@@ -72,7 +87,6 @@ pub unsafe fn configure_cpu_caches() {
 /// ENTRY point is defined in memory.x
 /// *Note: the pre_init function is called in the original reset handler
 /// after the initializations done in this function*
-#[cfg(feature = "rt")]
 #[doc(hidden)]
 #[no_mangle]
 #[link_section = ".rwtext"]
@@ -83,9 +97,13 @@ pub unsafe extern "C" fn ESP32Reset() -> ! {
     extern "C" {
         static mut _rtc_fast_bss_start: u32;
         static mut _rtc_fast_bss_end: u32;
+        static mut _rtc_fast_persistent_start: u32;
+        static mut _rtc_fast_persistent_end: u32;
 
         static mut _rtc_slow_bss_start: u32;
         static mut _rtc_slow_bss_end: u32;
+        static mut _rtc_slow_persistent_start: u32;
+        static mut _rtc_slow_persistent_end: u32;
 
         static mut _stack_start_cpu0: u32;
 
@@ -107,6 +125,19 @@ pub unsafe extern "C" fn ESP32Reset() -> ! {
         addr_of_mut!(_rtc_slow_bss_start),
         addr_of_mut!(_rtc_slow_bss_end),
     );
+    if matches!(
+        crate::reset::get_reset_reason(),
+        None | Some(SocResetReason::ChipPowerOn)
+    ) {
+        xtensa_lx_rt::zero_bss(
+            addr_of_mut!(_rtc_fast_persistent_start),
+            addr_of_mut!(_rtc_fast_persistent_end),
+        );
+        xtensa_lx_rt::zero_bss(
+            addr_of_mut!(_rtc_slow_persistent_start),
+            addr_of_mut!(_rtc_slow_persistent_end),
+        );
+    }
 
     unsafe {
         let stack_chk_guard = core::ptr::addr_of_mut!(__stack_chk_guard);
@@ -136,6 +167,38 @@ unsafe fn post_init() {
     let mut rtc = Rtc::new(LPWR::steal());
     rtc.rwdt.disable();
 
-    Wdt::<TIMG0>::set_wdt_enabled(false);
-    Wdt::<TIMG1>::set_wdt_enabled(false);
+    Wdt::<TIMG0, crate::Blocking>::set_wdt_enabled(false);
+    Wdt::<TIMG1, crate::Blocking>::set_wdt_enabled(false);
+}
+
+#[doc(hidden)]
+#[link_section = ".rwtext"]
+pub unsafe fn cache_writeback_addr(addr: u32, size: u32) {
+    extern "C" {
+        fn Cache_WriteBack_Addr(addr: u32, size: u32);
+        fn Cache_Suspend_DCache_Autoload() -> u32;
+        fn Cache_Resume_DCache_Autoload(value: u32);
+    }
+    // suspend autoload, avoid load cachelines being written back
+    let autoload = Cache_Suspend_DCache_Autoload();
+    Cache_WriteBack_Addr(addr, size);
+    Cache_Resume_DCache_Autoload(autoload);
+}
+
+#[doc(hidden)]
+#[link_section = ".rwtext"]
+pub unsafe fn cache_invalidate_addr(addr: u32, size: u32) {
+    extern "C" {
+        fn Cache_Invalidate_Addr(addr: u32, size: u32);
+    }
+    Cache_Invalidate_Addr(addr, size);
+}
+
+#[doc(hidden)]
+#[link_section = ".rwtext"]
+pub unsafe fn cache_get_dcache_line_size() -> u32 {
+    extern "C" {
+        fn Cache_Get_DCache_Line_Size() -> u32;
+    }
+    Cache_Get_DCache_Line_Size()
 }

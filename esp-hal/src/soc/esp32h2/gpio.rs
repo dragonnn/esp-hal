@@ -36,6 +36,7 @@
 //! two different banks:
 //!   * `InterruptStatusRegisterAccessBank0`
 //!   * `InterruptStatusRegisterAccessBank1`.
+//!
 //! This trait provides functions to read the interrupt status and NMI status
 //! registers for both the `PRO CPU` and `APP CPU`. The implementation uses the
 //! `gpio` peripheral to access the appropriate registers.
@@ -46,22 +47,21 @@ use crate::{
         GpioPin,
         InterruptStatusRegisterAccess,
         InterruptStatusRegisterAccessBank0,
-        Unknown,
     },
     peripherals::GPIO,
 };
 
 // https://github.com/espressif/esp-idf/blob/df9310a/components/soc/esp32h2/gpio_periph.c#L42
-pub const NUM_PINS: usize = 27;
+pub const NUM_PINS: usize = 28;
 
 pub(crate) const FUNC_IN_SEL_OFFSET: usize = 0;
 
-pub type OutputSignalType = u8;
-pub const OUTPUT_SIGNAL_MAX: u8 = 128;
-pub const INPUT_SIGNAL_MAX: u8 = 124;
+pub(crate) type OutputSignalType = u8;
+pub(crate) const OUTPUT_SIGNAL_MAX: u8 = 128;
+pub(crate) const INPUT_SIGNAL_MAX: u8 = 124;
 
-pub const ONE_INPUT: u8 = 0x1e;
-pub const ZERO_INPUT: u8 = 0x1f;
+pub(crate) const ONE_INPUT: u8 = 0x1e;
+pub(crate) const ZERO_INPUT: u8 = 0x1f;
 
 pub(crate) const GPIO_FUNCTION: AlternateFunction = AlternateFunction::Function1;
 
@@ -76,6 +76,7 @@ pub(crate) fn gpio_intr_enable(int_enable: bool, nmi_enable: bool) -> u8 {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum InputSignal {
     EXT_ADC_START       = 0,
     U0RXD               = 6,
@@ -160,6 +161,7 @@ pub enum InputSignal {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum OutputSignal {
     LEDC_LS_SIG0     = 0,
     LEDC_LS_SIG1     = 1,
@@ -256,7 +258,6 @@ pub enum OutputSignal {
     GPIO             = 128,
 }
 
-// FIXME: add alternate function numbers/signals where necessary
 crate::gpio::gpio! {
     (0, 0, InputOutputAnalog (2 => FSPIQ) (2 => FSPIQ))
     (1, 0, InputOutputAnalog (2 => FSPICS0) (2 => FSPICS0))
@@ -305,9 +306,3 @@ impl InterruptStatusRegisterAccess for InterruptStatusRegisterAccessBank0 {
         unsafe { &*GPIO::PTR }.pcpu_nmi_int().read().bits()
     }
 }
-
-// TODO USB pins
-// implement marker traits on USB pins
-// impl<T> crate::otg_fs::UsbSel for Gpio??<T> {}
-// impl<T> crate::otg_fs::UsbDp for Gpio27<T> {}
-// impl<T> crate::otg_fs::UsbDm for Gpio26<T> {}

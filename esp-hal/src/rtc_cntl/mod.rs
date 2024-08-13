@@ -1,16 +1,13 @@
-//! # RTC_CNTL (Real-Time Clock Control) and Low-power Management
+//! # Real-Time Clock Control and Low-power Management (RTC_CNTL)
 //!
 //! ## Overview
-//! The `rtc_cntl` module provides a driver for the `RTC_CNTL` peripheral on ESP
-//! chips.
+//! The RTC_CNTL peripheral is responsible for managing the real-time clock and
+//! low-power modes on the chip.
 //!
-//! The `Real-Time Clock Control (RTC_CNTL)` peripheral is responsible for
-//! managing the real-time clock and low-power modes on the chip.
-//!
-//! The `rtc_cntl` driver module contains functions and data structures to
-//! interact with the `RTC_CNTL` peripheral on ESP chips. It also includes the
-//! necessary configurations and constants for clock sources and low-power
-//! management. The driver provides the following features and functionalities:
+//! ## Configuration
+//!  It also includes the necessary configurations and constants for clock
+//! sources and low-power management. The driver provides the following features
+//! and functionalities:
 //!    * Clock Configuration
 //!    * Calibration
 //!    * Low-Power Management
@@ -18,52 +15,55 @@
 //!    * Handling Watchdog Timers
 //!
 //! ## Examples
-//! ### Print time in milliseconds from the RTC Timer
-//! ```no_run
+//! ### Print Time in Milliseconds From the RTC Timer
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use core::cell::RefCell;
+//!
+//! # use critical_section::Mutex;
+//! # use esp_hal::delay::Delay;
+//! # use esp_hal::rtc_cntl::Rtc;
+//! # use esp_hal::rtc_cntl::Rwdt;
+//! # use crate::esp_hal::prelude::_fugit_ExtU64;
+//! # use crate::esp_hal::InterruptConfigurable;
+//! static RWDT: Mutex<RefCell<Option<Rwdt>>> = Mutex::new(RefCell::new(None));
 //! let mut delay = Delay::new(&clocks);
 //!
-//! loop {
-//!     esp_println::println!("rtc time in milliseconds is {}", rtc.get_time_ms());
-//!     delay.delay_ms(1000u32);
-//! }
-//! ```
-//!
-//! ### RTC Watchdog Timer
-//! ```no_run
-//! rtc.rwdt.start(2000u64.millis());
+//! let mut rtc = Rtc::new(peripherals.LPWR);
+//! rtc.set_interrupt_handler(interrupt_handler);
+//! rtc.rwdt.set_timeout(2000.millis());
 //! rtc.rwdt.listen();
-//!
-//! interrupt::enable(
-//!     peripherals::Interrupt::LP_WDT,
-//!     interrupt::Priority::Priority1,
-//! )
-//! .unwrap();
 //!
 //! critical_section::with(|cs| RWDT.borrow_ref_mut(cs).replace(rtc.rwdt));
 //!
-//! unsafe {
-//!     riscv::interrupt::enable();
-//! }
 //!
 //! loop {}
-//! ```
+//! # }
 //!
-//! Where the `LP_WDT` interrupt handler is defined as:
-//! ```no_run
+//! // Where the `LP_WDT` interrupt handler is defined as:
 //! // Handle the corresponding interrupt
-//! #[interrupt]
-//! fn LP_WDT() {
+//! # use core::cell::RefCell;
+//!
+//! # use critical_section::Mutex;
+//! # use esp_hal::prelude::handler;
+//! # use esp_hal::interrupt::InterruptHandler;
+//! # use esp_hal::interrupt;
+//! # use esp_hal::interrupt::Priority;
+//! # use crate::esp_hal::prelude::_fugit_ExtU64;
+//! # use esp_hal::rtc_cntl::Rwdt;
+//! static RWDT: Mutex<RefCell<Option<Rwdt>>> = Mutex::new(RefCell::new(None));
+//! #[handler]
+//! fn interrupt_handler() {
 //!     critical_section::with(|cs| {
-//!         esp_println::println!("RWDT Interrupt");
+//!         // esp_println::println!("RWDT Interrupt");
 //!
 //!         let mut rwdt = RWDT.borrow_ref_mut(cs);
 //!         let rwdt = rwdt.as_mut().unwrap();
-//!
 //!         rwdt.clear_interrupt();
 //!
-//!         esp_println::println!("Restarting in 5 seconds...");
+//!         // esp_println::println!("Restarting in 5 seconds...");
 //!
-//!         rwdt.start(5000u64.millis());
+//!         rwdt.set_timeout(5000u64.millis());
 //!         rwdt.unlisten();
 //!     });
 //! }
@@ -86,9 +86,12 @@ use crate::peripherals::{LP_TIMER, LP_WDT};
 use crate::rtc_cntl::sleep::{RtcSleepConfig, WakeSource, WakeTriggers};
 use crate::{
     clock::Clock,
+    interrupt::{self, InterruptHandler},
     peripheral::{Peripheral, PeripheralRef},
+    peripherals::Interrupt,
     reset::{SleepSource, WakeupReason},
     Cpu,
+    InterruptConfigurable,
 };
 // only include sleep where its been implemented
 #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
@@ -187,6 +190,9 @@ pub struct Rtc<'d> {
 }
 
 impl<'d> Rtc<'d> {
+    /// Create a new instance in [crate::Blocking] mode.
+    ///
+    /// Optionally an interrupt handler can be bound.
     pub fn new(rtc_cntl: impl Peripheral<P = crate::peripherals::LPWR> + 'd) -> Self {
         rtc::init();
         rtc::configure_clock();
@@ -204,11 +210,12 @@ impl<'d> Rtc<'d> {
         this
     }
 
+    /// Return estimated XTAL frequency in MHz.
     pub fn estimate_xtal_frequency(&mut self) -> u32 {
         RtcClock::estimate_xtal_frequency()
     }
 
-    /// read the current value of the rtc time registers.
+    /// Read the current value of the rtc time registers.
     pub fn get_time_raw(&self) -> u64 {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::ptr() };
@@ -247,48 +254,35 @@ impl<'d> Rtc<'d> {
         ((h as u64) << 32) | (l as u64)
     }
 
-    /// read the current value of the rtc time registers in microseconds.
+    /// Read the current value of the rtc time registers in microseconds.
     pub fn get_time_us(&self) -> u64 {
         self.get_time_raw() * 1_000_000 / RtcClock::get_slow_freq().frequency().to_Hz() as u64
     }
 
-    /// read the current value of the rtc time registers in milliseconds
+    /// Read the current value of the rtc time registers in milliseconds.
     pub fn get_time_ms(&self) -> u64 {
         self.get_time_raw() * 1_000 / RtcClock::get_slow_freq().frequency().to_Hz() as u64
     }
 
-    /// enter deep sleep and wake with the provided `wake_sources`
+    /// Enter deep sleep and wake with the provided `wake_sources`.
     #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
-    pub fn sleep_deep(
-        &mut self,
-        wake_sources: &[&dyn WakeSource],
-        delay: &mut crate::delay::Delay,
-    ) -> ! {
+    pub fn sleep_deep(&mut self, wake_sources: &[&dyn WakeSource]) -> ! {
         let config = RtcSleepConfig::deep();
-        self.sleep(&config, wake_sources, delay);
+        self.sleep(&config, wake_sources);
         unreachable!();
     }
 
-    /// enter light sleep and wake with the provided `wake_sources`
+    /// Enter light sleep and wake with the provided `wake_sources`.
     #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
-    pub fn sleep_light(
-        &mut self,
-        wake_sources: &[&dyn WakeSource],
-        delay: &mut crate::delay::Delay,
-    ) {
+    pub fn sleep_light(&mut self, wake_sources: &[&dyn WakeSource]) {
         let config = RtcSleepConfig::default();
-        self.sleep(&config, wake_sources, delay);
+        self.sleep(&config, wake_sources);
     }
 
-    /// enter sleep with the provided `config` and wake with the provided
-    /// `wake_sources`
+    /// Enter sleep with the provided `config` and wake with the provided
+    /// `wake_sources`.
     #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
-    pub fn sleep(
-        &mut self,
-        config: &RtcSleepConfig,
-        wake_sources: &[&dyn WakeSource],
-        delay: &mut crate::delay::Delay,
-    ) {
+    pub fn sleep(&mut self, config: &RtcSleepConfig, wake_sources: &[&dyn WakeSource]) {
         let mut config = *config;
         let mut wakeup_triggers = WakeTriggers::default();
         for wake_source in wake_sources {
@@ -296,23 +290,45 @@ impl<'d> Rtc<'d> {
         }
 
         config.apply();
-        delay.delay_millis(100);
 
         config.start_sleep(wakeup_triggers);
         config.finish_sleep();
     }
 }
+impl<'d> crate::private::Sealed for Rtc<'d> {}
+
+impl<'d> InterruptConfigurable for Rtc<'d> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            interrupt::bind_interrupt(
+                #[cfg(any(esp32c6, esp32h2))]
+                Interrupt::LP_WDT,
+                #[cfg(not(any(esp32c6, esp32h2)))]
+                Interrupt::RTC_CORE,
+                handler.handler(),
+            );
+            interrupt::enable(
+                #[cfg(any(esp32c6, esp32h2))]
+                Interrupt::LP_WDT,
+                #[cfg(not(any(esp32c6, esp32h2)))]
+                Interrupt::RTC_CORE,
+                handler.priority(),
+            )
+            .unwrap();
+        }
+    }
+}
 
 #[cfg(not(any(esp32c6, esp32h2)))]
-/// RTC Watchdog Timer
+/// RTC Watchdog Timer.
 pub struct RtcClock;
 
 #[cfg(not(any(esp32c6, esp32h2)))]
-/// RTC Watchdog Timer driver
+/// RTC Watchdog Timer driver.
 impl RtcClock {
     const CAL_FRACT: u32 = 19;
 
-    /// Enable or disable 8 MHz internal oscillator
+    /// Enable or disable 8 MHz internal oscillator.
     ///
     /// Output from 8 MHz internal oscillator is passed into a configurable
     /// divider, which by default divides the input clock frequency by 256.
@@ -352,7 +368,7 @@ impl RtcClock {
         }
     }
 
-    /// Get main XTAL frequency
+    /// Get main XTAL frequency.
     /// This is the value stored in RTC register RTC_XTAL_FREQ_REG by the
     /// bootloader, as passed to rtc_clk_init function.
     pub fn get_xtal_freq() -> XtalClock {
@@ -380,7 +396,7 @@ impl RtcClock {
         }
     }
 
-    /// Get the RTC_SLOW_CLK source
+    /// Get the RTC_SLOW_CLK source.
     #[cfg(not(any(esp32c6, esp32h2)))]
     pub fn get_slow_freq() -> RtcSlowClock {
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -393,7 +409,7 @@ impl RtcClock {
         }
     }
 
-    /// Select source for RTC_SLOW_CLK
+    /// Select source for RTC_SLOW_CLK.
     #[cfg(not(any(esp32c6, esp32h2)))]
     fn set_slow_freq(slow_freq: RtcSlowClock) {
         unsafe {
@@ -416,7 +432,7 @@ impl RtcClock {
         crate::rom::ets_delay_us(300u32);
     }
 
-    /// Select source for RTC_FAST_CLK
+    /// Select source for RTC_FAST_CLK.
     #[cfg(not(any(esp32c6, esp32h2)))]
     fn set_fast_freq(fast_freq: RtcFastClock) {
         unsafe {
@@ -576,7 +592,7 @@ impl RtcClock {
         cal_val
     }
 
-    /// Measure ratio between XTAL frequency and RTC slow clock frequency
+    /// Measure ratio between XTAL frequency and RTC slow clock frequency.
     fn get_calibration_ratio(cal_clk: RtcCalSel, slowclk_cycles: u32) -> u32 {
         let xtal_cycles = RtcClock::calibrate_internal(cal_clk, slowclk_cycles) as u64;
         let ratio = (xtal_cycles << RtcClock::CAL_FRACT) / slowclk_cycles as u64;
@@ -584,7 +600,7 @@ impl RtcClock {
         (ratio & (u32::MAX as u64)) as u32
     }
 
-    /// Measure RTC slow clock's period, based on main XTAL frequency
+    /// Measure RTC slow clock's period, based on main XTAL frequency.
     ///
     /// This function will time out and return 0 if the time for the given
     /// number of cycles to be counted exceeds the expected time twice. This
@@ -618,7 +634,7 @@ impl RtcClock {
         (100_000_000 * 1000 / period) as u16
     }
 
-    // TODO: implement for ESP32-C6, and H2
+    /// Return estimated XTAL frequency in MHz.
     #[cfg(not(any(esp32c6, esp32h2)))]
     pub(crate) fn estimate_xtal_frequency() -> u32 {
         // Number of 8M/256 clock cycles to use for XTAL frequency estimation.
@@ -643,7 +659,7 @@ impl RtcClock {
     }
 }
 
-/// Behavior of the RWDT stage if it times out
+/// Behavior of the RWDT stage if it times out.
 #[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 enum RwdtStageAction {
@@ -654,7 +670,7 @@ enum RwdtStageAction {
     ResetRtc    = 4,
 }
 
-/// RTC Watchdog Timer
+/// RTC Watchdog Timer.
 pub struct Rwdt {
     stg0_action: RwdtStageAction,
     stg1_action: RwdtStageAction,
@@ -673,18 +689,19 @@ impl Default for Rwdt {
     }
 }
 
-/// RTC Watchdog Timer driver
+/// RTC Watchdog Timer driver.
 impl Rwdt {
-    /// Enable the watchdog timer instance
+    /// Enable the watchdog timer instance.
     pub fn enable(&mut self) {
         self.set_enabled(true);
     }
 
-    /// Disable the watchdog timer instance
+    /// Disable the watchdog timer instance.
     pub fn disable(&mut self) {
         self.set_enabled(false);
     }
 
+    /// Listen for interrupts.
     pub fn listen(&mut self) {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -705,6 +722,7 @@ impl Rwdt {
         self.set_write_protection(true);
     }
 
+    /// Stop listening for interrupts.
     pub fn unlisten(&mut self) {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -725,6 +743,7 @@ impl Rwdt {
         self.set_write_protection(true);
     }
 
+    /// Clear interrupt.
     pub fn clear_interrupt(&mut self) {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -738,6 +757,7 @@ impl Rwdt {
         self.set_write_protection(true);
     }
 
+    /// Check if the interrupt is set.
     pub fn is_interrupt_set(&self) -> bool {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -747,6 +767,7 @@ impl Rwdt {
         rtc_cntl.int_st().read().wdt().bit_is_set()
     }
 
+    /// Feed the watchdog timer.
     pub fn feed(&mut self) {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -754,7 +775,7 @@ impl Rwdt {
         let rtc_cntl = unsafe { &*LP_WDT::PTR };
 
         self.set_write_protection(false);
-        rtc_cntl.wdtfeed().write(|w| unsafe { w.bits(1) });
+        rtc_cntl.wdtfeed().write(|w| w.wdt_feed().set_bit());
         self.set_write_protection(true);
     }
 
@@ -784,6 +805,7 @@ impl Rwdt {
         self.set_write_protection(true);
     }
 
+    /// Configure timeout value in ms.
     pub fn set_timeout(&mut self, timeout: MicrosDurationU64) {
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::PTR };
@@ -924,12 +946,14 @@ impl embedded_hal_02::watchdog::WatchdogDisable for Swd {
     }
 }
 
+/// Return reset reason.
 pub fn get_reset_reason(cpu: Cpu) -> Option<SocResetReason> {
     let reason = crate::rom::rtc_get_reset_reason(cpu as u32);
 
     SocResetReason::from_repr(reason as usize)
 }
 
+/// Return wakeup reason.
 pub fn get_wakeup_cause() -> SleepSource {
     if get_reset_reason(Cpu::ProCpu) != Some(SocResetReason::CoreDeepSleep) {
         return SleepSource::Undefined;

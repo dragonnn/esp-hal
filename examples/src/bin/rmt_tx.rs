@@ -1,6 +1,9 @@
 //! Demonstrates generating pulse sequences with RMT
 //!
 //! Connect a logic analyzer to GPIO4 to see the generated pulses.
+//!
+//! The following wiring is assumed:
+//! - generated pulses => GPIO4
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
 
@@ -11,19 +14,20 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
     prelude::*,
     rmt::{PulseCode, Rmt, TxChannel, TxChannelConfig, TxChannelCreator},
+    system::SystemControl,
 };
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32h2")] {
@@ -33,7 +37,7 @@ fn main() -> ! {
         }
     };
 
-    let rmt = Rmt::new(peripherals.RMT, freq, &clocks, None).unwrap();
+    let rmt = Rmt::new(peripherals.RMT, freq, &clocks).unwrap();
 
     let tx_config = TxChannelConfig {
         clk_divider: 255,

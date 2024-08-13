@@ -36,6 +36,7 @@
 //! two different banks:
 //!   * `InterruptStatusRegisterAccessBank0`
 //!   * `InterruptStatusRegisterAccessBank1`.
+//!
 //! This trait provides functions to read the interrupt status and NMI status
 //! registers for both the `PRO CPU` and `APP CPU`. The implementation uses the
 //! `gpio` peripheral to access the appropriate registers.
@@ -46,21 +47,20 @@ use crate::{
         GpioPin,
         InterruptStatusRegisterAccess,
         InterruptStatusRegisterAccessBank0,
-        Unknown,
     },
     peripherals::GPIO,
 };
 
-pub const NUM_PINS: usize = 30;
+pub const NUM_PINS: usize = 31;
 
 pub(crate) const FUNC_IN_SEL_OFFSET: usize = 0;
 
-pub type OutputSignalType = u8;
-pub const OUTPUT_SIGNAL_MAX: u8 = 128;
-pub const INPUT_SIGNAL_MAX: u8 = 124;
+pub(crate) type OutputSignalType = u8;
+pub(crate) const OUTPUT_SIGNAL_MAX: u8 = 128;
+pub(crate) const INPUT_SIGNAL_MAX: u8 = 124;
 
-pub const ONE_INPUT: u8 = 0x1e;
-pub const ZERO_INPUT: u8 = 0x1f;
+pub(crate) const ONE_INPUT: u8 = 0x1e;
+pub(crate) const ZERO_INPUT: u8 = 0x1f;
 
 pub(crate) const GPIO_FUNCTION: AlternateFunction = AlternateFunction::Function1;
 
@@ -75,6 +75,7 @@ pub(crate) fn gpio_intr_enable(int_enable: bool, nmi_enable: bool) -> u8 {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum InputSignal {
     EXT_ADC_START       = 0,
     U0RXD               = 6,
@@ -90,7 +91,14 @@ pub enum InputSignal {
     I2SI_BCK            = 16,
     I2SI_WS             = 17,
     USB_JTAG_TDO_BRIDGE = 19,
-    CPU_TESTBUS0        = 20, // TODO: verify
+    CPU_TESTBUS0        = 20,
+    CPU_TESTBUS1        = 21,
+    CPU_TESTBUS2        = 22,
+    CPU_TESTBUS3        = 23,
+    CPU_TESTBUS4        = 24,
+    CPU_TESTBUS5        = 25,
+    CPU_TESTBUS6        = 26,
+    CPU_TESTBUS7        = 27,
     CPU_GPIO_IN0        = 28,
     CPU_GPIO_IN1        = 29,
     CPU_GPIO_IN2        = 30,
@@ -171,6 +179,7 @@ pub enum InputSignal {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Copy, Clone)]
+#[doc(hidden)]
 pub enum OutputSignal {
     LEDC_LS_SIG0          = 0,
     LEDC_LS_SIG1          = 1,
@@ -191,7 +200,15 @@ pub enum OutputSignal {
     I2SI_BCK              = 16,
     I2SI_WS               = 17,
     I2SO_SD1              = 18,
-    USB_JTAG_TRST         = 19, // TODO: Verify
+    USB_JTAG_TDO_BRIDGE   = 19,
+    CPU_TESTBUS0          = 20,
+    CPU_TESTBUS1          = 21,
+    CPU_TESTBUS2          = 22,
+    CPU_TESTBUS3          = 23,
+    CPU_TESTBUS4          = 24,
+    CPU_TESTBUS5          = 25,
+    CPU_TESTBUS6          = 26,
+    CPU_TESTBUS7          = 27,
     CPU_GPIO_OUT0         = 28,
     CPU_GPIO_OUT1         = 29,
     CPU_GPIO_OUT2         = 30,
@@ -262,7 +279,7 @@ pub enum OutputSignal {
     SPICLK_MUX            = 114,
     SPICS0                = 115,
     SPICS1                = 116,
-    GPIO_TASK_MATRIX_OUT0 = 117, // TODO: verify rhis group - not in TRM but in ESP_IDF
+    GPIO_TASK_MATRIX_OUT0 = 117,
     GPIO_TASK_MATRIX_OUT1 = 118,
     GPIO_TASK_MATRIX_OUT2 = 119,
     GPIO_TASK_MATRIX_OUT3 = 120,
@@ -295,12 +312,12 @@ crate::gpio::gpio! {
     (15, 0, InputOutput)
     (16, 0, InputOutput (0 => U0RXD) (2 => FSPICS0))
     (17, 0, InputOutput () (0 => U0TXD 2 => FSPICS1))
-    (18, 0, InputOutput () (2 => FSPICS2)) // TODO 0 => SDIO_CMD
-    (19, 0, InputOutput () (2 => FSPICS3)) // TODO 0 => SDIO_CLK
-    (20, 0, InputOutput () (2 => FSPICS4)) //TODO 0 => SDIO_DATA0
-    (21, 0, InputOutput () (2 => FSPICS5)) // TODO 0 => SDIO_DATA1
-    (22, 0, InputOutput () ()) // TODO 0 => SDIO_DATA2
-    (23, 0, InputOutput () ()) // TODO 0 => SDIO_DATA3
+    (18, 0, InputOutput () (2 => FSPICS2)) //  0 => SDIO_CMD but there are no signals since it's a fixed pin
+    (19, 0, InputOutput () (2 => FSPICS3)) //  0 => SDIO_CLK but there are no signals since it's a fixed pin
+    (20, 0, InputOutput () (2 => FSPICS4)) // 0 => SDIO_DATA0 but there are no signals since it's a fixed pin
+    (21, 0, InputOutput () (2 => FSPICS5)) // 0 => SDIO_DATA1 but there are no signals since it's a fixed pin
+    (22, 0, InputOutput () ()) // 0 => SDIO_DATA2 but there are no signals since it's a fixed pin
+    (23, 0, InputOutput () ()) // 0 => SDIO_DATA3 but there are no signals since it's a fixed pin
     (24, 0, InputOutput () (0 => SPICS0))
     (25, 0, InputOutput (0 => SPIQ) (0 => SPIQ))
     (26, 0, InputOutput (0 => SPIWP) (0 => SPIWP))
@@ -321,7 +338,7 @@ crate::gpio::analog! {
     7
 }
 
-crate::gpio::lp_gpio::lp_gpio! {
+crate::gpio::lp_io::lp_gpio! {
     0
     1
     2
@@ -341,9 +358,3 @@ impl InterruptStatusRegisterAccess for InterruptStatusRegisterAccessBank0 {
         unsafe { &*GPIO::PTR }.pcpu_nmi_int().read().bits()
     }
 }
-
-// TODO USB pins
-// implement marker traits on USB pins
-// impl<T> crate::otg_fs::UsbSel for Gpio??<T> {}
-// impl<T> crate::otg_fs::UsbDp for Gpio12<T> {}
-// impl<T> crate::otg_fs::UsbDm for Gpio13<T> {}

@@ -1,47 +1,49 @@
 //! Blinks 3 LEDs
 //!
-//! This assumes that LEDs are connected to GPIO8, 9 and 10.
+//! The boot button is treated as an input, and will print a message when pressed.
+//! This additionally demonstrates passing GPIO to a function in a generic way.
 //!
-//! GPIO1 is treated as an input, and will print a message when pressed. This
-//! Additionally demonstrates passing GPIO to a function in a generic way.
+//! The following wiring is assumed:
+//! - LEDs => GPIO2, GPIO4, GPIO5
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: embedded-hal-02
 
 #![no_std]
 #![no_main]
 
-use embedded_hal_02::digital::v2::{InputPin, ToggleableOutputPin};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    gpio::{AnyPin, Input, Output, PullDown, PushPull, IO},
+    gpio::{AnyInput, AnyOutput, Io, Level, Pull},
     peripherals::Peripherals,
     prelude::*,
+    system::SystemControl,
 };
 
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     // Set LED GPIOs as an output:
-    let led1 = io.pins.gpio8.into_push_pull_output();
-    let led2 = io.pins.gpio9.into_push_pull_output();
-    let led3 = io.pins.gpio10.into_push_pull_output();
+    let led1 = AnyOutput::new(io.pins.gpio2, Level::Low);
+    let led2 = AnyOutput::new(io.pins.gpio4, Level::Low);
+    let led3 = AnyOutput::new(io.pins.gpio5, Level::Low);
 
-    // Set GPIO0 as an input:
-    let button = io.pins.gpio0.into_pull_down_input().into();
+    // Use boot button as an input:
+    #[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32s3"))]
+    let button = io.pins.gpio0;
+    #[cfg(not(any(feature = "esp32", feature = "esp32s2", feature = "esp32s3")))]
+    let button = io.pins.gpio9;
 
-    // You can use `into` or `degrade`:
-    let mut pins = [led1.into(), led2.into(), led3.degrade().into()];
+    let button = AnyInput::new(button, Pull::Up);
 
-    // Initialize the `Delay` peripheral, and use it to toggle the LED state
-    // in a loop:
+    let mut pins = [led1, led2, led3];
+
     let delay = Delay::new(&clocks);
 
     loop {
@@ -50,12 +52,12 @@ fn main() -> ! {
     }
 }
 
-fn toggle_pins(leds: &mut [AnyPin<Output<PushPull>>], button: &AnyPin<Input<PullDown>>) {
+fn toggle_pins(leds: &mut [AnyOutput], button: &AnyInput) {
     for pin in leds.iter_mut() {
-        pin.toggle().unwrap();
+        pin.toggle();
     }
 
-    if button.is_low().unwrap() {
+    if button.is_low() {
         esp_println::println!("Button pressed");
     }
 }

@@ -36,6 +36,7 @@
 //! two different banks:
 //!   * `InterruptStatusRegisterAccessBank0`
 //!   * `InterruptStatusRegisterAccessBank1`.
+//!
 //! This trait provides functions to read the interrupt status and NMI status
 //! registers for both the `PRO CPU` and `APP CPU`. The implementation uses the
 //! `gpio` peripheral to access the appropriate registers.
@@ -45,21 +46,20 @@ use crate::{
         GpioPin,
         InterruptStatusRegisterAccess,
         InterruptStatusRegisterAccessBank0,
-        Unknown,
     },
     peripherals::GPIO,
 };
 
-pub const NUM_PINS: usize = 20;
+pub const NUM_PINS: usize = 21;
 
 pub(crate) const FUNC_IN_SEL_OFFSET: usize = 0;
 
-pub type OutputSignalType = u8;
-pub const OUTPUT_SIGNAL_MAX: u8 = 128;
-pub const INPUT_SIGNAL_MAX: u8 = 100;
+pub(crate) type OutputSignalType = u8;
+pub(crate) const OUTPUT_SIGNAL_MAX: u8 = 128;
+pub(crate) const INPUT_SIGNAL_MAX: u8 = 100;
 
-pub const ONE_INPUT: u8 = 0x1e;
-pub const ZERO_INPUT: u8 = 0x1f;
+pub(crate) const ONE_INPUT: u8 = 0x1e;
+pub(crate) const ZERO_INPUT: u8 = 0x1f;
 
 pub(crate) const GPIO_FUNCTION: AlternateFunction = AlternateFunction::Function1;
 
@@ -74,6 +74,7 @@ pub(crate) fn gpio_intr_enable(int_enable: bool, nmi_enable: bool) -> u8 {
 /// Peripheral input signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, PartialEq)]
+#[doc(hidden)]
 pub enum InputSignal {
     SPIQ          = 0,
     SPID          = 1,
@@ -113,6 +114,7 @@ pub enum InputSignal {
 /// Peripheral output signals for the GPIO mux
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, PartialEq)]
+#[doc(hidden)]
 pub enum OutputSignal {
     SPIQ          = 0,
     SPID          = 1,

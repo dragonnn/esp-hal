@@ -1,7 +1,6 @@
-//! # RISC­V Trace Encoder (TRACE)
+//! # RISC-­V Trace Encoder (TRACE)
 //!
 //! ## Overview
-//!
 //! The high-performance CPU supports instruction trace interface through the
 //! trace encoder. The trace encoder connects to HP CPU’s instruction trace
 //! interface, compresses the information into smaller packets, and then stores
@@ -19,16 +18,19 @@
 //! That is where instruction trace comes in, which provides trace of the
 //! program execution.
 //!
-//! ## Example
-//! ```no_run
+//! ## Examples
+//! ```rust, no_run
+#![doc = crate::before_snippet!()]
+//! # use esp_hal::trace::Trace;
 //! let mut trace = Trace::new(peripherals.TRACE0);
-//! let buffer = unsafe { &mut BUFFER[..] };
-//! trace.start_trace(buffer);
+//! let mut buffer = [0_u8; 1024];
+//! trace.start_trace(&mut buffer);
 //! // traced code
-//! println!("Hello");
+//!
 //! // end traced code
 //! let res = trace.stop_trace().unwrap();
 //! // transfer the trace result to the host and decode it there
+//! # }
 //! ```
 
 use crate::{
@@ -76,13 +78,12 @@ where
     pub fn start_trace(&mut self, buffer: &'d mut [u8]) {
         let reg_block = self.peripheral.register_block();
 
-        reg_block.mem_start_addr().modify(|_, w| {
-            w.mem_start_addr()
-                .variant(buffer.as_ptr() as *const _ as u32)
-        });
-        reg_block.mem_end_addr().modify(|_, w| {
+        reg_block
+            .mem_start_addr()
+            .modify(|_, w| unsafe { w.mem_start_addr().bits(buffer.as_ptr() as *const _ as u32) });
+        reg_block.mem_end_addr().modify(|_, w| unsafe {
             w.mem_end_addr()
-                .variant((buffer.as_ptr() as *const _ as u32) + (buffer.len() as u32))
+                .bits((buffer.as_ptr() as *const _ as u32) + (buffer.len() as u32))
         });
         reg_block
             .mem_addr_update()

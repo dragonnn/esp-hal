@@ -1,4 +1,8 @@
-//! Demonstrates deep sleep with timer, using gpio2 (low) and gpio3 (high) as wakeup sources.
+//! Demonstrates deep sleep with timer, using low and high level pins as wakeup sources.
+//!
+//! The following wiring is assumed:
+//! - ext1 wakeup pin => GPIO2 (low level)
+//!                   => GPIO3 (high level)
 
 //% CHIPS: esp32c6
 
@@ -12,9 +16,8 @@ use esp_hal::{
     clock::ClockControl,
     delay::Delay,
     entry,
-    gpio::{RTCPinWithResistors, IO},
+    gpio::{Io, RtcPinWithResistors},
     peripherals::Peripherals,
-    prelude::*,
     rtc_cntl::{
         get_reset_reason,
         get_wakeup_cause,
@@ -22,6 +25,7 @@ use esp_hal::{
         Rtc,
         SocResetReason,
     },
+    system::SystemControl,
     Cpu,
 };
 use esp_println::println;
@@ -29,12 +33,12 @@ use esp_println::println;
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let mut rtc = Rtc::new(peripherals.LPWR);
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let mut pin2 = io.pins.gpio2;
     let mut pin3 = io.pins.gpio3;
 
@@ -44,10 +48,10 @@ fn main() -> ! {
     let wake_reason = get_wakeup_cause();
     println!("wake reason: {:?}", wake_reason);
 
-    let mut delay = Delay::new(&clocks);
+    let delay = Delay::new(&clocks);
     let timer = TimerWakeupSource::new(Duration::from_secs(10));
 
-    let wakeup_pins: &mut [(&mut dyn RTCPinWithResistors, WakeupLevel)] = &mut [
+    let wakeup_pins: &mut [(&mut dyn RtcPinWithResistors, WakeupLevel)] = &mut [
         (&mut pin2, WakeupLevel::Low),
         (&mut pin3, WakeupLevel::High),
     ];
@@ -55,5 +59,5 @@ fn main() -> ! {
     let rtcio = Ext1WakeupSource::new(wakeup_pins);
     println!("sleeping!");
     delay.delay_millis(100);
-    rtc.sleep_deep(&[&timer, &rtcio], &mut delay);
+    rtc.sleep_deep(&[&timer, &rtcio]);
 }

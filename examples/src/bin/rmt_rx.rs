@@ -1,21 +1,25 @@
 //! Demonstrates decoding pulse sequences with RMT
+//!
+//! The following wiring is assumed:
+//! - Input pin  => GPIO4
+//! - Output pin => GPIO5
+//!
 //! Connect GPIO5 to GPIO4
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: embedded-hal-02
 
 #![no_std]
 #![no_main]
 
-use embedded_hal_02::digital::v2::OutputPin;
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     delay::Delay,
-    gpio::IO,
+    gpio::Io,
     peripherals::Peripherals,
     prelude::*,
     rmt::{PulseCode, Rmt, RxChannel, RxChannelConfig, RxChannelCreator},
+    system::SystemControl,
 };
 use esp_println::{print, println};
 
@@ -24,11 +28,11 @@ const WIDTH: usize = 80;
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let mut out = io.pins.gpio5.into_push_pull_output();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut out = io.pins.gpio5;
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32h2")] {
@@ -38,7 +42,7 @@ fn main() -> ! {
         }
     };
 
-    let rmt = Rmt::new(peripherals.RMT, freq, &clocks, None).unwrap();
+    let rmt = Rmt::new(peripherals.RMT, freq, &clocks).unwrap();
 
     let rx_config = RxChannelConfig {
         clk_divider: 1,
@@ -75,9 +79,9 @@ fn main() -> ! {
 
         // simulate input
         for i in 0u32..5u32 {
-            out.set_high().unwrap();
+            out.set_high();
             delay.delay_micros(i * 10 + 20);
-            out.set_low().unwrap();
+            out.set_low();
             delay.delay_micros(i * 20 + 20);
         }
 

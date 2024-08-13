@@ -9,11 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
 ### Fixed
+
+### Removed
+
+## 0.9.0 - 2024-07-15
+
+### Added
+
+- `rtc-ram` feature used by `esp-hal` to control rtc ram initialization (#1677)
+
+### Removed
+
+- All existing features controlling ram initialization. Most (`init-data`, `init-rw-text`,
+  `init-rtc-fast-data`, and `init-rtc-fast-text`) were only used for the (already removed) direct
+  boot support. `zero-bss` is now enabled unconditionally. `zero-rtc-fast-bss` was merged into the
+  new `rtc-ram` feature. (#1677)
+
+## 0.8.0 - 2024-04-18
+
+### Fixed
+
+- Ensure we don't strongly define cpu int handlers (#1324)
+- Discard interrupt symbols from LTO so that LTO doesn't end up rebinding them (#1327)
 
 ### Changed
 
-### Removed
+- Remove the `direct-vectoring` & `interrupt-preemption` features and enable them by default (#1310)
 
 ## 0.7.0 - 2024-03-08
 
