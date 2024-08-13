@@ -82,6 +82,8 @@ use crate::efuse::Efuse;
 use crate::peripherals::{LPWR, TIMG0};
 #[cfg(any(esp32c6, esp32h2))]
 use crate::peripherals::{LP_TIMER, LP_WDT};
+#[cfg(any(esp32c6))]
+use crate::peripherals::{LP_AON};
 #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
 use crate::rtc_cntl::sleep::{RtcSleepConfig, WakeSource, WakeTriggers};
 use crate::{
@@ -285,8 +287,10 @@ impl<'d> Rtc<'d> {
         // For more info on about how RTC setting works, see https://github.com/esp-rs/esp-hal/pull/1883
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::ptr() };
-        #[cfg(any(esp32c6, esp32h2))]
+        #[cfg(any(esp32h2))]
         let rtc_cntl = unsafe { &*LP_TIMER::ptr() };
+        #[cfg(any(esp32c6))]
+        let rtc_cntl = unsafe { &*LP_AON::ptr() };
 
         // Register documentation: https://github.com/espressif/esp-idf/blob/master/components/esp_rom/esp32s3/include/esp32s3/rom/rtc.h
         // STORE2 and STORE3 are used on all current chips: esp32, esp32p4, esp32h2,
@@ -311,8 +315,10 @@ impl<'d> Rtc<'d> {
         // For more info on about how RTC setting works, see https://github.com/esp-rs/esp-hal/pull/1883
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::ptr() };
-        #[cfg(any(esp32c6, esp32h2))]
+        #[cfg(any(esp32h2))]
         let rtc_cntl = unsafe { &*LP_TIMER::ptr() };
+        #[cfg(any(esp32c6))]
+        let rtc_cntl = unsafe { &*LP_AON::ptr() };
 
         // Register documentation: https://github.com/espressif/esp-idf/blob/master/components/esp_rom/esp32s3/include/esp32s3/rom/rtc.h
         // STORE2 and STORE3 are used on all current chips: esp32, esp32p4, esp32h2,
@@ -1133,3 +1139,4 @@ pub fn get_wakeup_cause() -> SleepSource {
 
     SleepSource::Undefined
 }
+
