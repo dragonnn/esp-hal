@@ -83,7 +83,7 @@ use crate::efuse::Efuse;
 #[cfg(not(any(esp32c6, esp32h2)))]
 use crate::peripherals::{LPWR, TIMG0};
 #[cfg(any(esp32c6, esp32h2))]
-use crate::peripherals::{LP_TIMER, LP_WDT};
+use crate::peripherals::{LP_AON, LP_TIMER, LP_WDT};
 #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
 use crate::rtc_cntl::sleep::{RtcSleepConfig, WakeSource, WakeTriggers};
 use crate::{
@@ -183,12 +183,6 @@ pub(crate) enum RtcCalSel {
     RtcCalInternalOsc = 3,
 }
 
-#[derive(Debug)]
-/// This error indicates that an overflow would've happened if
-/// the rtc time was set to the requested value. See [`Rtc::set_time_us`]
-/// and [`Rtc::set_time_ms`] for more info.
-pub struct RtcSetOverflow;
-
 /// Low-power Management
 pub struct Rtc<'d> {
     _inner: PeripheralRef<'d, crate::peripherals::LPWR>,
@@ -277,23 +271,28 @@ impl<'d> Rtc<'d> {
         self.get_rtc_time_raw() * 1_000_000 / RtcClock::get_slow_freq().frequency().to_Hz() as u64
     }
 
-    /// Read the current value of the rtc time registers in milliseconds.
-    fn get_rtc_time_ms(&self) -> u64 {
-        self.get_rtc_time_raw() * 1_000 / RtcClock::get_slow_freq().frequency().to_Hz() as u64
-    }
-
     /// Read the current value of the boot time registers in microseconds.
     fn get_boot_time_us(&self) -> u64 {
-        // For more info on about how RTC setting works, see https://github.com/esp-rs/esp-hal/pull/1883
+        // For more info on about how RTC setting works and what it has to do with boot time, see https://github.com/esp-rs/esp-hal/pull/1883
+
+        // In terms of registers, STORE2 and STORE3 are used on all current chips
+        // (esp32, esp32p4, esp32h2, esp32c2, esp32c3, esp32c5, esp32c6, esp32c61,
+        // esp32s2, esp32s3)
+
+        // In terms of peripherals:
+
+        // - LPWR is used on the following chips: esp32, esp32p4, esp32c2, esp32c3,
+        //   esp32s2, esp32s3
+
+        // - LP_AON is used on the following chips: esp32c5, esp32c6, esp32c61, esp32h2
+
+        // For registers and peripherals used in esp-idf, see https://github.com/search?q=repo%3Aespressif%2Fesp-idf+RTC_BOOT_TIME_LOW_REG+RTC_BOOT_TIME_HIGH_REG+path%3A**%2Frtc.h&type=code
+
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::ptr() };
         #[cfg(any(esp32c6, esp32h2))]
-        let rtc_cntl = unsafe { &*LP_TIMER::ptr() };
+        let rtc_cntl = unsafe { &*LP_AON::ptr() };
 
-        // Register documentation: https://github.com/espressif/esp-idf/blob/master/components/esp_rom/esp32s3/include/esp32s3/rom/rtc.h
-        // STORE2 and STORE3 are used on all current chips: esp32, esp32p4, esp32h2,
-        // esp32c2, esp32c3, esp32c5, esp32c6, esp32c61, esp32s2, esp32s3
-        // See https://github.com/search?q=repo%3Aespressif%2Fesp-idf+RTC_BOOT_TIME_LOW_REG+RTC_BOOT_TIME_HIGH_REG+path%3A**%2Frtc.h&type=code
         let (l, h) = (rtc_cntl.store2(), rtc_cntl.store3());
 
         let l = l.read().bits() as u64;
@@ -303,23 +302,16 @@ impl<'d> Rtc<'d> {
         l + (h << 32)
     }
 
-    /// Read the current value of the rtc time registers in milliseconds.
-    fn get_boot_time_ms(&self) -> u64 {
-        self.get_boot_time_us() / 1_000
-    }
-
     /// Set the current value of the boot time registers in microseconds.
     fn set_boot_time_us(&self, boot_time_us: u64) {
-        // For more info on about how RTC setting works, see https://github.com/esp-rs/esp-hal/pull/1883
+        // Please see `get_boot_time_ms` for documentation on registers and peripherals
+        // used for certain SOCs.
+
         #[cfg(not(any(esp32c6, esp32h2)))]
         let rtc_cntl = unsafe { &*LPWR::ptr() };
         #[cfg(any(esp32c6, esp32h2))]
-        let rtc_cntl = unsafe { &*LP_TIMER::ptr() };
+        let rtc_cntl = unsafe { &*LP_AON::ptr() };
 
-        // Register documentation: https://github.com/espressif/esp-idf/blob/master/components/esp_rom/esp32s3/include/esp32s3/rom/rtc.h
-        // STORE2 and STORE3 are used on all current chips: esp32, esp32p4, esp32h2,
-        // esp32c2, esp32c3, esp32c5, esp32c6, esp32c61, esp32s2, esp32s3
-        // See https://github.com/search?q=repo%3Aespressif%2Fesp-idf+RTC_BOOT_TIME_LOW_REG+RTC_BOOT_TIME_HIGH_REG+path%3A**%2Frtc.h&type=code
         let (l, h) = (rtc_cntl.store2(), rtc_cntl.store3());
 
         // https://github.com/espressif/esp-idf/blob/23e4823f17a8349b5e03536ff7653e3e584c9351/components/newlib/port/esp_time_impl.c#L102-L103
@@ -330,48 +322,44 @@ impl<'d> Rtc<'d> {
     /// Read the current value of the time registers in microseconds.
     pub fn get_time_us(&self) -> u64 {
         // current time is boot time + time since boot
-        self.get_boot_time_us() + self.get_rtc_time_us()
+        let rtc_time_us = self.get_rtc_time_us();
+        let boot_time_us = self.get_boot_time_us();
+        let wrapped_boot_time_us = u64::MAX - boot_time_us;
+        // We can detect if we wrapped the boot time by checking if rtc time is greater
+        // than the amount of time we would've wrapped.
+        if rtc_time_us > wrapped_boot_time_us {
+            // We also just checked that this won't overflow
+            rtc_time_us - wrapped_boot_time_us
+        } else {
+            boot_time_us + rtc_time_us
+        }
     }
 
     /// Read the current value of the time registers in milliseconds.
     pub fn get_time_ms(&self) -> u64 {
-        // current time is boot time + time since boot
-        self.get_boot_time_ms() + self.get_rtc_time_ms()
+        self.get_time_us() / 1_000
     }
 
     /// Set the current value of the time registers in microseconds.
-    ///
-    /// This function will fail if `time_us` is less than the time
-    /// since boot. This happens because when setting the time, we
-    /// have to set the boot time which is calculated by subtracting
-    /// `time_us` from the time since boot. However, since time is
-    /// stored with unsigned integers, if `time_us` is less than
-    /// the time since boot, the subtraction result will be negative
-    /// and thus an overflow will occur.
-    pub fn set_time_us(&self, time_us: u64) -> Result<(), RtcSetOverflow> {
-        // current time is boot time + time since boot (rtc time)
-        // so boot time = current time - time since boot (rtc time)
+    pub fn set_time_us(&self, time_us: u64) {
+        // Current time is boot time + time since boot (rtc time)
+        // So boot time = current time - time since boot (rtc time)
         let rtc_time_us = self.get_rtc_time_us();
         if time_us < rtc_time_us {
-            // if we subtract rtc_time_us from time_us, it will be negative and an overflow
-            // will happen
-            Err(RtcSetOverflow)
+            // An overflow would happen if we subtracted rtc_time_us from time_us.
+            // To work around this, we can wrap around u64::MAX by subtracting the
+            // difference between the current time and the time since boot.
+            // Subtracting time since boot and adding current new time is equivalent and
+            // avoids overflow. We just checked that rtc_time_us is less than time_us
+            // so this won't overflow.
+            self.set_boot_time_us(u64::MAX - rtc_time_us + time_us)
         } else {
-            self.set_boot_time_us(time_us - rtc_time_us);
-            Ok(())
+            self.set_boot_time_us(time_us - rtc_time_us)
         }
     }
 
     /// Set the current value of the time registers in milliseconds.
-    ///
-    /// This function will fail if `time_ms` is less than the time
-    /// since boot. This happens because when setting the time, we
-    /// have to set the boot time which is calculated by subtracting
-    /// `time_ms` from the time since boot. However, since time is
-    /// stored with unsigned integers, if `time_ms` is less than
-    /// the time since boot, the subtraction result will be negative
-    /// and thus an overflow will occur.
-    pub fn set_time_ms(&self, time_ms: u64) -> Result<(), RtcSetOverflow> {
+    pub fn set_time_ms(&self, time_ms: u64) {
         self.set_time_us(time_ms * 1_000)
     }
 
