@@ -1,21 +1,23 @@
-//! # Real-Time Clock Control and Low-power Management (RTC_CNTL)
+//! # Real-Time Control and Low-power Management (RTC_CNTL)
 //!
 //! ## Overview
-//! The RTC_CNTL peripheral is responsible for managing the real-time clock and
-//! low-power modes on the chip.
+//!
+//! The RTC_CNTL peripheral is responsible for managing the low-power modes on
+//! the chip.
 //!
 //! ## Configuration
-//!  It also includes the necessary configurations and constants for clock
+//!
+//! It also includes the necessary configurations and constants for clock
 //! sources and low-power management. The driver provides the following features
 //! and functionalities:
+//!
 //!    * Clock Configuration
 //!    * Calibration
 //!    * Low-Power Management
-//!    * Real-Time Clock
 //!    * Handling Watchdog Timers
 //!
-//! ## Examples
-//! ### Print Time in Milliseconds From the RTC Timer
+//! ## Example
+//!
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use core::cell::RefCell;
@@ -30,28 +32,23 @@
 //! let mut delay = Delay::new(&clocks);
 //!
 //! let mut rtc = Rtc::new(peripherals.LPWR);
+//!
 //! rtc.set_interrupt_handler(interrupt_handler);
 //! rtc.rwdt.set_timeout(2000.millis());
 //! rtc.rwdt.listen();
 //!
 //! critical_section::with(|cs| RWDT.borrow_ref_mut(cs).replace(rtc.rwdt));
-//!
-//!
-//! loop {}
 //! # }
 //!
 //! // Where the `LP_WDT` interrupt handler is defined as:
-//! // Handle the corresponding interrupt
 //! # use core::cell::RefCell;
 //!
 //! # use critical_section::Mutex;
-//! # use esp_hal::prelude::handler;
-//! # use esp_hal::interrupt::InterruptHandler;
-//! # use esp_hal::interrupt;
-//! # use esp_hal::interrupt::Priority;
-//! # use crate::esp_hal::prelude::_fugit_ExtU64;
 //! # use esp_hal::rtc_cntl::Rwdt;
+//!
 //! static RWDT: Mutex<RefCell<Option<Rwdt>>> = Mutex::new(RefCell::new(None));
+//!
+//! // Handle the corresponding interrupt
 //! #[handler]
 //! fn interrupt_handler() {
 //!     critical_section::with(|cs| {
@@ -68,8 +65,6 @@
 //!     });
 //! }
 //! ```
-
-#![allow(missing_docs)] // TODO: Remove when able
 
 #[cfg(not(any(esp32c6, esp32h2)))]
 use fugit::HertzU32;
@@ -186,8 +181,10 @@ pub(crate) enum RtcCalSel {
 /// Low-power Management
 pub struct Rtc<'d> {
     _inner: PeripheralRef<'d, crate::peripherals::LPWR>,
+    /// Reset Watchdog Timer.
     pub rwdt: Rwdt,
     #[cfg(any(esp32c2, esp32c3, esp32c6, esp32h2, esp32s3))]
+    /// Super Watchdog
     pub swd: Swd,
 }
 
@@ -197,7 +194,6 @@ impl<'d> Rtc<'d> {
     /// Optionally an interrupt handler can be bound.
     pub fn new(rtc_cntl: impl Peripheral<P = crate::peripherals::LPWR> + 'd) -> Self {
         rtc::init();
-        rtc::configure_clock();
 
         let this = Self {
             _inner: rtc_cntl.into_ref(),

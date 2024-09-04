@@ -6,23 +6,21 @@
 //! with loopback mode enabled). It's using circular DMA mode
 
 //% CHIPS: esp32c3 esp32c6 esp32s3 esp32h2
+//% FEATURES: generic-queue
 
 #![no_std]
 #![no_main]
 
-use defmt_rtt as _;
-use esp_backtrace as _;
 use esp_hal::{
-    clock::ClockControl,
     dma::{Dma, DmaChannel0, DmaPriority},
     gpio::Io,
     i2s::{asynch::*, DataFormat, I2s, I2sTx, Standard},
     peripheral::Peripheral,
-    peripherals::{Peripherals, I2S0},
+    peripherals::I2S0,
     prelude::*,
-    system::SystemControl,
     Async,
 };
+use hil_test as _;
 
 const BUFFER_SIZE: usize = 2000;
 
@@ -76,18 +74,21 @@ async fn writer(tx_buffer: &'static mut [u8], i2s_tx: I2sTx<'static, I2S0, DmaCh
 #[cfg(test)]
 #[embedded_test::tests(executor = esp_hal_embassy::Executor::new())]
 mod tests {
-    use super::*;
+    // defmt::* is load-bearing, it ensures that the assert in dma_buffers! is not
+    // using defmt's non-const assert. Doing so would result in a compile error.
+    #[allow(unused_imports)]
+    use defmt::{assert_eq, *};
 
-    #[init]
-    async fn init() {}
+    use super::*;
 
     #[test]
     async fn test_i2s_loopback() {
         let spawner = embassy_executor::Spawner::for_current_executor().await;
 
-        let peripherals = Peripherals::take();
-        let system = SystemControl::new(peripherals.SYSTEM);
-        let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
+        let (peripherals, clocks) = esp_hal::init(esp_hal::Config::default());
+
+        let peripherals = peripherals;
+        let clocks = clocks;
 
         let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 

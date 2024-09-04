@@ -5,56 +5,38 @@
 //! same bus. I2C uses two bidirectional open-drain lines: serial data line
 //! (SDA) and serial clock line (SCL), pulled up by resistors.
 //!
-//! Espressif devices sometimes have more than one I2C controller (also called
-//! port), responsible for handling communication on the I2C bus. A single I2C
-//! controller can be a master or a slave.
+//! Espressif devices sometimes have more than one I2C controller, responsible
+//! for handling communication on the I2C bus. A single I2C controller can be
+//! a master or a slave.
 //!
 //! Typically, an I2C slave device has a 7-bit address or 10-bit address.
-//! Espressif devices supports both I2C Standard-mode (Sm) and Fast-mode
-//! (Fm) which can go up to 100KHz and 400KHz respectively.
+//! Devices supports both I2C Standard-mode (Sm) and Fast-mode (Fm) which can
+//! go up to 100KHz and 400KHz respectively.
 //!
 //! ## Configuration
 //!
 //! Each I2C controller is individually configurable, and the usual setting
 //! such as frequency, timeout, and SDA/SCL pins can easily be configured.
 //!
-//! ```rust, no_run
-#![doc = crate::before_snippet!()]
-//! # use esp_hal::i2c::I2C;
-//! # use esp_hal::gpio::Io;
-//! # use core::option::Option::None;
-//! # use crate::esp_hal::prelude::_fugit_RateExtU32;
-//! let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-//! // Create a new peripheral object with the described wiring
-//! // and standard I2C clock speed
-//! let mut i2c = I2C::new(
-//!     peripherals.I2C0,
-//!     io.pins.gpio1,
-//!     io.pins.gpio2,
-//!     100.kHz(),
-//!     &clocks,
-//! );
-//! # }
-//! ```
-//! 
 //! ## Usage
 //!
 //! The I2C driver implements a number of third-party traits, with the
 //! intention of making the HAL inter-compatible with various device drivers
 //! from the community. This includes the [embedded-hal] for both 0.2.x and
-//! 1.x.x versions.
+//! 1.0.x versions.
 //!
 //! ## Examples
+//!
 //! ### Read Data from a BMP180 Sensor
+//!
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::i2c::I2C;
 //! # use esp_hal::gpio::Io;
-//! # use core::option::Option::None;
-//! # use crate::esp_hal::prelude::_fugit_RateExtU32;
 //! let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+//!
 //! // Create a new peripheral object with the described wiring
-//! // and standard I2C clock speed
+//! // and standard I2C clock speed.
 //! let mut i2c = I2C::new(
 //!     peripherals.I2C0,
 //!     io.pins.gpio1,
@@ -62,14 +44,13 @@
 //!     100.kHz(),
 //!     &clocks,
 //! );
+//!
 //! loop {
 //!     let mut data = [0u8; 22];
 //!     i2c.write_read(0x77, &[0xaa], &mut data).ok();
 //! }
 //! # }
 //! ```
-
-#![allow(missing_docs)] // TODO: Remove when able
 
 use core::marker::PhantomData;
 
@@ -100,11 +81,17 @@ const MAX_ITERATIONS: u32 = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
+    /// The transmission exceeded the FIFO size.
     ExceedingFifo,
+    /// The acknowledgment check failed.
     AckCheckFailed,
+    /// A timeout occurred during transmission.
     TimeOut,
+    /// The arbitration for the bus was lost.
     ArbitrationLost,
+    /// The execution of the I2C command was incomplete.
     ExecIncomplete,
+    /// The number of commands issued exceeded the limit.
     CommandNrExceeded,
 }
 
@@ -512,6 +499,7 @@ mod asynch {
     }
 
     #[cfg(not(esp32))]
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
     pub(crate) struct I2cFuture<'a, T>
     where
         T: Instance,
@@ -1010,19 +998,29 @@ mod asynch {
 
 /// I2C Peripheral Instance
 pub trait Instance: crate::private::Sealed {
+    /// The identifier number for this I2C instance.
     const I2C_NUMBER: usize;
 
+    /// Returns the interrupt associated with this I2C peripheral.
     fn interrupt() -> crate::peripherals::Interrupt;
 
+    /// Returns the SCL output signal for this I2C peripheral.
     fn scl_output_signal(&self) -> OutputSignal;
+    /// Returns the SCL input signal for this I2C peripheral.
     fn scl_input_signal(&self) -> InputSignal;
+    /// Returns the SDA output signal for this I2C peripheral.
     fn sda_output_signal(&self) -> OutputSignal;
+    /// Returns the SDA input signal for this I2C peripheral.
     fn sda_input_signal(&self) -> InputSignal;
 
+    /// Returns a reference to the register block of the I2C peripheral.
     fn register_block(&self) -> &RegisterBlock;
 
+    /// Returns the I2C peripheral's index number.
     fn i2c_number(&self) -> usize;
 
+    /// Configures the I2C peripheral with the specified frequency, clocks, and
+    /// optional timeout.
     fn setup(&mut self, frequency: HertzU32, clocks: &Clocks<'_>, timeout: Option<u32>) {
         self.register_block().ctr().modify(|_, w| unsafe {
             // Clear register
@@ -1055,12 +1053,15 @@ pub trait Instance: crate::private::Sealed {
         self.set_filter(Some(7), Some(7));
 
         // Configure frequency
-        #[cfg(esp32)]
-        self.set_frequency(clocks.i2c_clock.convert(), frequency, timeout);
-        #[cfg(esp32s2)]
-        self.set_frequency(clocks.apb_clock.convert(), frequency, timeout);
-        #[cfg(not(any(esp32, esp32s2)))]
-        self.set_frequency(clocks.xtal_clock.convert(), frequency, timeout);
+        cfg_if::cfg_if! {
+            if #[cfg(esp32)] {
+                self.set_frequency(clocks.i2c_clock.convert(), frequency, timeout);
+            } else if #[cfg(esp32s2)] {
+                self.set_frequency(clocks.apb_clock.convert(), frequency, timeout);
+            } else {
+                self.set_frequency(clocks.xtal_clock.convert(), frequency, timeout);
+            }
+        }
 
         self.update_config();
 
@@ -1339,6 +1340,7 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[allow(clippy::too_many_arguments, unused)]
+    /// Configures the clock and timing parameters for the I2C peripheral.
     fn configure_clock(
         &mut self,
         sclk_div: u32,
@@ -1445,6 +1447,7 @@ pub trait Instance: crate::private::Sealed {
         }
     }
 
+    /// Configures the I2C peripheral for a write operation.
     fn setup_write<'a, I>(&self, addr: u8, bytes: &[u8], cmd_iterator: &mut I) -> Result<(), Error>
     where
         I: Iterator<Item = &'a COMD>,
@@ -1475,6 +1478,7 @@ pub trait Instance: crate::private::Sealed {
         Ok(())
     }
 
+    /// Configures the I2C peripheral for a read operation.
     fn setup_read<'a, I>(
         &self,
         addr: u8,
@@ -1528,6 +1532,7 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[cfg(not(any(esp32, esp32s2)))]
+    /// Reads all bytes from the RX FIFO.
     fn read_all_from_fifo(&self, buffer: &mut [u8]) -> Result<(), Error> {
         // Read bytes from FIFO
         // FIXME: Handle case where less data has been provided by the slave than
@@ -1549,6 +1554,7 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[cfg(any(esp32, esp32s2))]
+    /// Reads all bytes from the RX FIFO.
     fn read_all_from_fifo(&self, buffer: &mut [u8]) -> Result<(), Error> {
         // on ESP32/ESP32-S2 we currently don't support I2C transactions larger than the
         // FIFO apparently it would be possible by using non-fifo mode
@@ -1573,12 +1579,14 @@ pub trait Instance: crate::private::Sealed {
         Ok(())
     }
 
+    /// Clears all pending interrupts for the I2C peripheral.
     fn clear_all_interrupts(&self) {
         self.register_block()
             .int_clr()
             .write(|w| unsafe { w.bits(I2C_LL_INTR_MASK) });
     }
 
+    /// Waits for the completion of an I2C transaction.
     fn wait_for_completion(&self, end_only: bool) -> Result<(), Error> {
         let mut tout = MAX_ITERATIONS;
         loop {
@@ -1604,6 +1612,7 @@ pub trait Instance: crate::private::Sealed {
         Ok(())
     }
 
+    /// Checks whether all I2C commands have completed execution.
     fn check_all_commands_done(&self) -> Result<(), Error> {
         // NOTE: on esp32 executing the end command generates the end_detect interrupt
         //       but does not seem to clear the done bit! So we don't check the done
@@ -1618,6 +1627,14 @@ pub trait Instance: crate::private::Sealed {
 
         Ok(())
     }
+
+    /// Checks for I2C transmission errors and handles them.
+    ///
+    /// This function inspects specific I2C-related interrupts to detect errors
+    /// during communication, such as timeouts, failed acknowledgments, or
+    /// arbitration loss. If an error is detected, the function handles it
+    /// by resetting the I2C peripheral to clear the error condition and then
+    /// returns an appropriate error.
     fn check_errors(&self) -> Result<(), Error> {
         let interrupts = self.register_block().int_raw().read();
 
@@ -1658,6 +1675,15 @@ pub trait Instance: crate::private::Sealed {
         Ok(())
     }
 
+    /// Updates the configuration of the I2C peripheral.
+    ///
+    /// This function ensures that the configuration values, such as clock
+    /// settings, SDA/SCL filtering, timeouts, and other operational
+    /// parameters, which are configured in other functions, are properly
+    /// propagated to the I2C hardware. This step is necessary to synchronize
+    /// the software-configured settings with the peripheral's internal
+    /// registers, ensuring that the hardware behaves according to the
+    /// current configuration.
     fn update_config(&self) {
         // Ensure that the configuration of the peripheral is correctly propagated
         // (only necessary for C2, C3, C6, H2 and S3 variant)
@@ -1667,6 +1693,7 @@ pub trait Instance: crate::private::Sealed {
             .modify(|_, w| w.conf_upgate().set_bit());
     }
 
+    /// Starts an I2C transmission.
     fn start_transmission(&self) {
         // Start transmission
         self.register_block()
@@ -1675,6 +1702,7 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[cfg(not(any(esp32, esp32s2)))]
+    /// Fills the TX FIFO with data from the provided slice.
     fn fill_tx_fifo(&self, bytes: &[u8]) -> usize {
         let mut index = 0;
         while index < bytes.len()
@@ -1704,6 +1732,8 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[cfg(not(any(esp32, esp32s2)))]
+    /// Writes remaining data from byte slice to the TX FIFO from the specified
+    /// index.
     fn write_remaining_tx_fifo(&self, start_index: usize, bytes: &[u8]) -> Result<(), Error> {
         let mut index = start_index;
         loop {
@@ -1743,6 +1773,7 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[cfg(any(esp32, esp32s2))]
+    /// Fills the TX FIFO with data from the provided slice.
     fn fill_tx_fifo(&self, bytes: &[u8]) -> usize {
         // on ESP32/ESP32-S2 we currently don't support I2C transactions larger than the
         // FIFO apparently it would be possible by using non-fifo mode
@@ -1760,6 +1791,8 @@ pub trait Instance: crate::private::Sealed {
     }
 
     #[cfg(any(esp32, esp32s2))]
+    /// Writes remaining data from byte slice to the TX FIFO from the specified
+    /// index.
     fn write_remaining_tx_fifo(&self, start_index: usize, bytes: &[u8]) -> Result<(), Error> {
         // on ESP32/ESP32-S2 we currently don't support I2C transactions larger than the
         // FIFO apparently it would be possible by using non-fifo mode
@@ -1838,6 +1871,7 @@ pub trait Instance: crate::private::Sealed {
             .write(|w| w.rxfifo_full().clear_bit_by_one());
     }
 
+    /// Executes an I2C write operation.
     fn write_operation<'a, I>(
         &self,
         address: u8,
@@ -1870,6 +1904,7 @@ pub trait Instance: crate::private::Sealed {
         Ok(())
     }
 
+    /// Executes an I2C read operation.
     fn read_operation<'a, I>(
         &self,
         address: u8,
@@ -1964,6 +1999,7 @@ pub trait Instance: crate::private::Sealed {
     }
 }
 
+/// Adds a command to the I2C command sequence.
 fn add_cmd<'a, I>(cmd_iterator: &mut I, command: Command) -> Result<(), Error>
 where
     I: Iterator<Item = &'a COMD>,
@@ -2139,12 +2175,19 @@ pub mod lp_i2c {
     #[derive(Debug, Clone, Copy, PartialEq)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum Error {
+        /// The transmission exceeded the FIFO size.
         ExceedingFifo,
+        /// The acknowledgment check failed.
         AckCheckFailed,
+        /// A timeout occurred during transmission.
         TimeOut,
+        /// The arbitration for the bus was lost.
         ArbitrationLost,
+        /// The execution of the I2C command was incomplete.
         ExecIncomplete,
+        /// The number of commands issued exceeded the limit.
         CommandNrExceeded,
+        /// The response received from the I2C device was invalid.
         InvalidResponse,
     }
 
@@ -2197,11 +2240,13 @@ pub mod lp_i2c {
     // Configure LP_EXT_I2C_CK_EN high to enable the clock source of I2C_SCLK.
     // Adjust the timing registers accordingly when the clock frequency changes.
 
+    /// Represents a Low-Power I2C peripheral.
     pub struct LpI2c {
         i2c: LP_I2C0,
     }
 
     impl LpI2c {
+        /// Creates a new instance of the `LpI2c` peripheral.
         pub fn new(
             i2c: LP_I2C0,
             _sda: LowPowerOutputOpenDrain<'_, 6>,
@@ -2444,6 +2489,7 @@ pub mod lp_i2c {
             self.i2c.ctr().modify(|_, w| w.conf_upgate().set_bit());
         }
 
+        /// Resets the transmit and receive FIFO buffers.
         fn reset_fifo(&self) {
             self.i2c
                 .fifo_conf()
